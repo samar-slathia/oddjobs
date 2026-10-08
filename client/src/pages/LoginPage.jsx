@@ -121,7 +121,7 @@ const LoginPage = () => {
           <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider text-center">
             One-Click Demo Accounts
           </p>
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-2 gap-2">
             <button
               onClick={() => handleDemoLogin('customer@oddjobs.com', 'customer')}
               className="px-2 py-2 bg-slate-100 hover:bg-indigo-50 hover:text-indigo-600 text-slate-700 rounded-xl text-[11px] font-bold transition-colors border border-slate-200"
@@ -133,12 +133,6 @@ const LoginPage = () => {
               className="px-2 py-2 bg-slate-100 hover:bg-indigo-50 hover:text-indigo-600 text-slate-700 rounded-xl text-[11px] font-bold transition-colors border border-slate-200"
             >
               Provider
-            </button>
-            <button
-              onClick={() => handleDemoLogin('admin@oddjobs.com', 'admin')}
-              className="px-2 py-2 bg-slate-100 hover:bg-indigo-50 hover:text-indigo-600 text-slate-700 rounded-xl text-[11px] font-bold transition-colors border border-slate-200"
-            >
-              Admin
             </button>
           </div>
         </div>

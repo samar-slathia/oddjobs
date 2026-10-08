@@ -43,6 +43,14 @@ async function runAllTests() {
     assert(regRes.body.token !== undefined, 'User registration returns JWT token');
     assert(regRes.body.user.password === undefined, 'Password hash is excluded from response');
 
+    // Prevent registering as admin
+    const adminRegRes = await request(app).post('/api/auth/register').send({
+      ...customerPayload,
+      email: 'hacker@test.com',
+      role: 'admin',
+    });
+    assert(adminRegRes.status === 403, 'Public registration blocks creating admin account (403)');
+
     const customerToken = regRes.body.token;
     const customerId = regRes.body.user._id;
 

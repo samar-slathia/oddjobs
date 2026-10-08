@@ -17,10 +17,13 @@ exports.register = async (req, res, next) => {
       });
     }
 
-    // Restrict registering direct admin role unless master secret matches
+    // Restrict registering admin role publicly
     let assignedRole = role || 'customer';
-    if (assignedRole === 'admin' && req.body.adminSecret !== process.env.ADMIN_SECRET) {
-      assignedRole = 'customer';
+    if (assignedRole === 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Admin accounts cannot be created via public registration.',
+      });
     }
 
     const user = await User.create({
