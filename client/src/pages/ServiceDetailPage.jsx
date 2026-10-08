@@ -24,7 +24,7 @@ import {
 const ServiceDetailPage = () => {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { user, isAuthenticated, isCustomer } = useAuth();
+  const { user, isAuthenticated, loading: authLoading } = useAuth();
 
   const [service, setService] = useState(null);
   const [reviews, setReviews] = useState([]);
@@ -58,6 +58,7 @@ const ServiceDetailPage = () => {
   }, [id]);
 
   const handleBookClick = () => {
+    if (authLoading) return;
     if (!isAuthenticated) {
       navigate('/login', { state: { from: `/services/${id}` } });
       return;

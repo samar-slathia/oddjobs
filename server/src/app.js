@@ -62,6 +62,41 @@ app.get('/api/health', (req, res) => {
   });
 });
 
+// Development seed endpoint
+app.post('/api/seed', async (req, res, next) => {
+  if (process.env.NODE_ENV === 'production') {
+    return res.status(403).json({ success: false, message: 'Forbidden in production' });
+  }
+  try {
+    const User = require('./models/User');
+    const Service = require('./models/Service');
+    const count = await User.countDocuments();
+    if (count === 0) {
+      const provider = await User.create({
+        name: 'Alex Rivera',
+        email: 'alex.electric@oddjobs.com',
+        password: 'Password123!',
+        role: 'service_provider',
+        phone: '+1 555-0199',
+        location: 'Northside, City',
+        bio: 'Licensed Master Electrician',
+      });
+      await Service.create({
+        title: 'Emergency Electrical Wiring & Circuit Fix',
+        description: 'Complete electrical troubleshooting and circuit breaker repair.',
+        category: 'Electrician',
+        price: 85,
+        priceType: 'hourly',
+        location: 'Northside, City',
+        provider: provider._id,
+      });
+    }
+    res.status(200).json({ success: true, message: 'Database seeded for development' });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // Mount Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/services', serviceRoutes);
