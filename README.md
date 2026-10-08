@@ -125,7 +125,7 @@ The server uses environment variables defined in `server/.env`. A template is pr
 ```env
 PORT=5000
 MONGODB_URI=mongodb://127.0.0.1:27017/oddjobs
-JWT_SECRET=oddjobs_super_secret_jwt_key_2026_prod_grade_32_bytes_long!
+JWT_SECRET=your_jwt_secret_key_here
 JWT_EXPIRES_IN=7d
 CLIENT_URL=http://localhost:5173
 NODE_ENV=development

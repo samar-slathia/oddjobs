@@ -1,7 +1,10 @@
 const jwt = require('jsonwebtoken');
 
 const sendTokenResponse = (user, statusCode, res, message = 'Success') => {
-  const secret = process.env.JWT_SECRET || 'oddjobs_fallback_secret_key_32_bytes!';
+  const secret = process.env.JWT_SECRET;
+  if (!secret) {
+    throw new Error('FATAL: JWT_SECRET environment variable is not defined.');
+  }
   const expiresIn = process.env.JWT_EXPIRES_IN || '7d';
 
   const token = jwt.sign({ id: user._id, role: user.role }, secret, {

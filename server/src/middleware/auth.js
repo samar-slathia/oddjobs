@@ -22,7 +22,10 @@ const protect = async (req, res, next) => {
   }
 
   try {
-    const secret = process.env.JWT_SECRET || 'oddjobs_fallback_secret_key_32_bytes!';
+    const secret = process.env.JWT_SECRET;
+    if (!secret) {
+      throw new Error('FATAL: JWT_SECRET environment variable is not defined.');
+    }
     const decoded = jwt.verify(token, secret);
 
     const user = await User.findById(decoded.id);

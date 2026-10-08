@@ -1,6 +1,8 @@
 const mongoose = require('mongoose');
 const { MongoMemoryServer } = require('mongodb-memory-server');
 const request = require('supertest');
+process.env.JWT_SECRET = 'test_secret_for_ci';
+process.env.NODE_ENV = 'test';
 const app = require('../src/app');
 const User = require('../src/models/User');
 
