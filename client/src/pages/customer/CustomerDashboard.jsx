@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { bookingService } from '../../services/bookingService';
 import BookingCard from '../../components/bookings/BookingCard';
@@ -9,6 +10,7 @@ import { formatCurrency } from '../../utils/formatters';
 import { Clock, CheckCircle2, DollarSign, Calendar, RefreshCw } from 'lucide-react';
 
 const CustomerDashboard = () => {
+  const navigate = useNavigate();
   const { user } = useAuth();
   const [bookings, setBookings] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -163,6 +165,12 @@ const CustomerDashboard = () => {
           <p className="text-xs text-slate-500">
             You don't have any bookings under the "{activeTab}" filter.
           </p>
+          <button
+            onClick={() => navigate('/services')}
+            className="mt-4 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl transition-colors"
+          >
+            Browse Local Services
+          </button>
         </div>
       ) : (
         <div className="space-y-4">
