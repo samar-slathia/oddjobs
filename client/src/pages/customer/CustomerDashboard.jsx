@@ -15,7 +15,7 @@ const CustomerDashboard = () => {
   const [bookings, setBookings] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [activeTab, setActiveTab] = useState('all');
+  const [activeTab, setActiveTab] = useState('active');
 
   const [reviewModalOpen, setReviewModalOpen] = useState(false);
   const [selectedBookingForReview, setSelectedBookingForReview] = useState(null);
@@ -63,19 +63,15 @@ const CustomerDashboard = () => {
   };
 
   const filteredBookings = bookings.filter((b) => {
-    if (activeTab === 'all') return true;
+    if (activeTab === 'active') {
+      return ['pending', 'accepted', 'in_progress'].includes(b.status);
+    }
     return b.status === activeTab;
   });
 
   const activeCount = bookings.filter((b) =>
     ['pending', 'accepted', 'in_progress'].includes(b.status)
   ).length;
-
-  const completedCount = bookings.filter((b) => b.status === 'completed').length;
-
-  const totalSpent = bookings
-    .filter((b) => b.status === 'completed')
-    .reduce((sum, b) => sum + (b.price || 0), 0);
 
   return (
     <div className="space-y-8 pb-16">
@@ -99,7 +95,7 @@ const CustomerDashboard = () => {
       <ErrorAlert message={error} onClose={() => setError(null)} />
 
       {/* Overview Stat Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
         <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs flex items-center space-x-4">
           <div className="w-12 h-12 bg-amber-50 text-amber-600 rounded-2xl flex items-center justify-center font-bold">
             <Clock className="w-6 h-6" />
@@ -110,35 +106,16 @@ const CustomerDashboard = () => {
           </div>
         </div>
 
-        <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs flex items-center space-x-4">
-          <div className="w-12 h-12 bg-emerald-50 text-emerald-600 rounded-2xl flex items-center justify-center font-bold">
-            <CheckCircle2 className="w-6 h-6" />
-          </div>
-          <div>
-            <p className="text-xs text-slate-500 font-semibold uppercase">Completed Jobs</p>
-            <p className="text-2xl font-extrabold text-slate-900">{completedCount}</p>
-          </div>
-        </div>
-
-        <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs flex items-center space-x-4">
-          <div className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center font-bold">
-            <DollarSign className="w-6 h-6" />
-          </div>
-          <div>
-            <p className="text-xs text-slate-500 font-semibold uppercase">Total Spent</p>
-            <p className="text-2xl font-extrabold text-slate-900">{formatCurrency(totalSpent)}</p>
-          </div>
-        </div>
+        {/* Note: Completed Jobs and Total Spent cards have been removed per product requirements */}
       </div>
 
       {/* Tabs Filter */}
       <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 pb-3">
         {[
-          { id: 'all', label: `All (${bookings.length})` },
+          { id: 'active', label: `Active (${activeCount})` },
           { id: 'pending', label: 'Pending' },
           { id: 'accepted', label: 'Accepted' },
           { id: 'in_progress', label: 'In Progress' },
-          { id: 'completed', label: 'Completed' },
           { id: 'cancelled', label: 'Cancelled' },
         ].map((tab) => (
           <button
