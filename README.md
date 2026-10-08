@@ -132,7 +132,7 @@ NODE_ENV=development
 ```
 
 > [!NOTE]
-> If a local MongoDB daemon is not running on `MONGODB_URI`, the server automatically spins up an in-memory `MongoMemoryServer` so the application runs seamlessly out-of-the-box.
+> For local development, if a local MongoDB daemon is not running on `MONGODB_URI`, the server automatically spins up an in-memory `MongoMemoryServer` so the application runs seamlessly out-of-the-box. This fallback is disabled in production to ensure data persistence.
 
 ---
 

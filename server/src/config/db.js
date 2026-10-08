@@ -16,7 +16,7 @@ const connectDB = async () => {
     console.log(`MongoDB Connected: ${conn.connection.host}`);
     return conn;
   } catch (primaryErr) {
-    if (process.env.NODE_ENV === 'test') {
+    if (process.env.NODE_ENV === 'test' || process.env.NODE_ENV === 'production') {
       throw primaryErr;
     }
 
