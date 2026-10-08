@@ -12,9 +12,8 @@ const Notification = require('../models/Notification');
 const { connectDB, disconnectDB } = require('../config/db');
 
 const seedData = async () => {
-  if (process.env.NODE_ENV === 'production' && !process.env.ALLOW_SEED) {
-    console.error('ERROR: Database seeding is disabled in production environment.');
-    console.error('Set ALLOW_SEED=true if you explicitly intend to seed production database.');
+  if (process.env.NODE_ENV === 'production') {
+    console.error('ERROR: Database seeding is strictly disabled in production environment.');
     process.exit(1);
   }
 

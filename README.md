@@ -160,12 +160,9 @@ cd server
 npm run seed
 ```
 
-#### Demo Credentials:
-- **Customer**: `customer@oddjobs.com` / `Password123!`
-- **Service Provider**: `alex.electric@oddjobs.com` / `Password123!`
-- **System Admin**: `admin@oddjobs.com` / `Password123!`
+> **⚠️ Security Warning:** Database seeding is strictly blocked in production. The seed script generates generic demo accounts (Customer, Provider, Admin) designed purely for development and testing.
 
-*(The Login page also includes 1-click Demo Account buttons for fast testing).*
+*(When running locally in development mode, the Login page automatically displays 1-click Demo Account buttons for fast testing).*
 
 ### 3. Start Backend Server
 

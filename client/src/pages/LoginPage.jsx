@@ -119,26 +119,30 @@ const LoginPage = () => {
           </button>
         </form>
 
-        {/* Demo Login Quick Buttons */}
-        <div className="pt-4 border-t border-slate-100 space-y-2">
-          <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider text-center">
-            One-Click Demo Accounts
-          </p>
-          <div className="grid grid-cols-2 gap-2">
-            <button
-              onClick={() => handleDemoLogin('customer@oddjobs.com', 'customer')}
-              className="px-2 py-2 bg-slate-100 hover:bg-indigo-50 hover:text-indigo-600 text-slate-700 rounded-xl text-[11px] font-bold transition-colors border border-slate-200"
-            >
-              Customer
-            </button>
-            <button
-              onClick={() => handleDemoLogin('alex.electric@oddjobs.com', 'service_provider')}
-              className="px-2 py-2 bg-slate-100 hover:bg-indigo-50 hover:text-indigo-600 text-slate-700 rounded-xl text-[11px] font-bold transition-colors border border-slate-200"
-            >
-              Provider
-            </button>
+        {import.meta.env.DEV && (
+          <>
+          {/* Demo Login Quick Buttons */}
+          <div className="pt-4 border-t border-slate-100 space-y-2">
+            <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider text-center">
+              One-Click Demo Accounts (Local Only)
+            </p>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                onClick={() => handleDemoLogin('customer@oddjobs.com', 'customer')}
+                className="px-2 py-2 bg-slate-100 hover:bg-indigo-50 hover:text-indigo-600 text-slate-700 rounded-xl text-[11px] font-bold transition-colors border border-slate-200"
+              >
+                Customer
+              </button>
+              <button
+                onClick={() => handleDemoLogin('alex.electric@oddjobs.com', 'service_provider')}
+                className="px-2 py-2 bg-slate-100 hover:bg-indigo-50 hover:text-indigo-600 text-slate-700 rounded-xl text-[11px] font-bold transition-colors border border-slate-200"
+              >
+                Provider
+              </button>
+            </div>
           </div>
-        </div>
+          </>
+        )}
 
         <p className="text-center text-xs text-slate-500">
           Don't have an account?{' '}
