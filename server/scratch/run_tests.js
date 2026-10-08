@@ -29,7 +29,7 @@ async function runAllTests() {
     await mongoose.connect(uri);
     console.log('Database connected (MongoMemoryServer)');
 
-    // TEST 1: Auth - Register customer
+    // SECTION 1: AUTHENTICATION & RBAC
     console.log('\n--- 1. AUTHENTICATION & RBAC TESTS ---');
     const customerPayload = {
       name: 'Test Customer',
@@ -44,25 +44,30 @@ async function runAllTests() {
     assert(regRes.body.user.password === undefined, 'Password hash is excluded from response');
 
     const customerToken = regRes.body.token;
+    const customerId = regRes.body.user._id;
 
-    // TEST 2: Auth - Prevent duplicate registration
+    // Prevent duplicate registration
     const dupRes = await request(app).post('/api/auth/register').send(customerPayload);
     assert(dupRes.status === 400, 'Duplicate email registration rejected with 400 Bad Request');
 
-    // TEST 3: Auth - Login
+    // Login
     const loginRes = await request(app).post('/api/auth/login').send({
       email: customerPayload.email,
       password: customerPayload.password,
     });
     assert(loginRes.status === 200, 'Login with valid credentials returns 200 OK');
 
-    // TEST 4: Auth - Protected /me endpoint
+    // Logout
+    const logoutRes = await request(app).post('/api/auth/logout');
+    assert(logoutRes.status === 200, 'Logout endpoint returns 200 OK');
+
+    // Protected /me endpoint
     const meRes = await request(app)
       .get('/api/auth/me')
       .set('Authorization', `Bearer ${customerToken}`);
     assert(meRes.status === 200 && meRes.body.user.email === customerPayload.email, 'Protected /me endpoint succeeds with valid token');
 
-    // TEST 5: Auth - Unauthenticated block
+    // Unauthenticated block
     const unauthRes = await request(app).get('/api/auth/me');
     assert(unauthRes.status === 401, 'Protected route rejects request without token with 401');
 
@@ -76,8 +81,22 @@ async function runAllTests() {
     const provRegRes = await request(app).post('/api/auth/register').send(providerPayload);
     const providerToken = provRegRes.body.token;
 
-    // TEST 6: Service Creation by Provider
-    console.log('\n--- 2. SERVICE CREATION & SEARCH TESTS ---');
+    // Register Admin
+    const adminUser = await User.create({
+      name: 'Admin User',
+      email: 'admin@test.com',
+      password: 'password123',
+      role: 'admin',
+    });
+    const adminLoginRes = await request(app).post('/api/auth/login').send({
+      email: 'admin@test.com',
+      password: 'password123',
+    });
+    const adminToken = adminLoginRes.body.token;
+    assert(adminLoginRes.body.user.role === 'admin', 'Admin login succeeds with admin role');
+
+    // SECTION 2: SERVICES MANAGEMENT & SEARCH
+    console.log('\n--- 2. SERVICE CREATION, EDIT & SEARCH TESTS ---');
     const serviceRes = await request(app)
       .post('/api/services')
       .set('Authorization', `Bearer ${providerToken}`)
@@ -92,7 +111,7 @@ async function runAllTests() {
     assert(serviceRes.status === 201, 'Service provider can create new service listing');
     const serviceId = serviceRes.body.service._id;
 
-    // TEST 7: Customer block from creating service
+    // Customer block from creating service
     const custServRes = await request(app)
       .post('/api/services')
       .set('Authorization', `Bearer ${customerToken}`)
@@ -105,11 +124,21 @@ async function runAllTests() {
       });
     assert(custServRes.status === 403, 'Customer role blocked from creating service listing (403)');
 
-    // TEST 8: Search & Filter Services
+    // Edit service by owner provider
+    const editRes = await request(app)
+      .put(`/api/services/${serviceId}`)
+      .set('Authorization', `Bearer ${providerToken}`)
+      .send({
+        title: 'Master Electrical Repair & Wiring',
+        price: 95,
+      });
+    assert(editRes.status === 200 && editRes.body.service.price === 95, 'Provider can update their own service listing');
+
+    // Search & Filter Services
     const searchRes = await request(app).get('/api/services?category=Electrician');
     assert(searchRes.status === 200 && searchRes.body.count === 1, 'Search & filter API returns matching service count');
 
-    // TEST 9: Booking Request Workflow
+    // SECTION 3: BOOKING WORKFLOW & STATE MACHINE
     console.log('\n--- 3. BOOKING WORKFLOW & STATE MACHINE TESTS ---');
     const bookingRes = await request(app)
       .post('/api/bookings')
@@ -123,21 +152,32 @@ async function runAllTests() {
     assert(bookingRes.status === 201 && bookingRes.body.booking.status === 'pending', 'Customer can submit booking request (Initial status: pending)');
     const bookingId = bookingRes.body.booking._id;
 
-    // TEST 10: State Machine - Provider accepts request (pending -> accepted)
+    // Test booking restriction: provider cannot book own service
+    const selfBookRes = await request(app)
+      .post('/api/bookings')
+      .set('Authorization', `Bearer ${providerToken}`)
+      .send({
+        serviceId,
+        scheduledDate: new Date(Date.now() + 86400000).toISOString(),
+        address: '123 Main Street',
+      });
+    assert(selfBookRes.status === 400, 'Provider blocked from booking their own service (400)');
+
+    // State Machine - Provider accepts request (pending -> accepted)
     const acceptRes = await request(app)
       .patch(`/api/bookings/${bookingId}/status`)
       .set('Authorization', `Bearer ${providerToken}`)
       .send({ status: 'accepted' });
     assert(acceptRes.status === 200 && acceptRes.body.booking.status === 'accepted', 'Provider can accept pending booking (status -> accepted)');
 
-    // TEST 11: Invalid State Machine Transition
+    // Invalid State Machine Transition
     const invalidTransRes = await request(app)
       .patch(`/api/bookings/${bookingId}/status`)
       .set('Authorization', `Bearer ${providerToken}`)
       .send({ status: 'pending' });
     assert(invalidTransRes.status === 400, 'Invalid status transition rejected (400 Bad Request)');
 
-    // TEST 12: Transition to in_progress and completed
+    // Transition to in_progress and completed
     await request(app)
       .patch(`/api/bookings/${bookingId}/status`)
       .set('Authorization', `Bearer ${providerToken}`)
@@ -149,8 +189,32 @@ async function runAllTests() {
       .send({ status: 'completed' });
     assert(completeRes.status === 200 && completeRes.body.booking.status === 'completed', 'Provider transitions booking to completed status');
 
-    // TEST 13: Reviews & Rating Aggregation
+    // SECTION 4: REVIEWS & RESTRICTIONS
     console.log('\n--- 4. REVIEWS & RATING AGGREGATION TESTS ---');
+    
+    // Create pending booking for review restriction test
+    const pendingBookingRes = await request(app)
+      .post('/api/bookings')
+      .set('Authorization', `Bearer ${customerToken}`)
+      .send({
+        serviceId,
+        scheduledDate: new Date(Date.now() + 86400000).toISOString(),
+        address: '456 Oak St',
+      });
+    const pendingBookingId = pendingBookingRes.body.booking._id;
+
+    // Review on pending booking attempt
+    const pendingReviewRes = await request(app)
+      .post('/api/reviews')
+      .set('Authorization', `Bearer ${customerToken}`)
+      .send({
+        bookingId: pendingBookingId,
+        rating: 5,
+        comment: 'Premature review attempt',
+      });
+    assert(pendingReviewRes.status === 400, 'Review submission on non-completed booking rejected (400)');
+
+    // Submit review on completed booking
     const reviewRes = await request(app)
       .post('/api/reviews')
       .set('Authorization', `Bearer ${customerToken}`)
@@ -168,7 +232,7 @@ async function runAllTests() {
       'Service rating & review count updated automatically after review submission'
     );
 
-    // TEST 14: Prevent duplicate review on same booking
+    // Prevent duplicate review on same booking
     const dupReviewRes = await request(app)
       .post('/api/reviews')
       .set('Authorization', `Bearer ${customerToken}`)
@@ -178,6 +242,47 @@ async function runAllTests() {
         comment: 'Trying duplicate review',
       });
     assert(dupReviewRes.status === 400, 'Duplicate review on same booking rejected (400)');
+
+    // SECTION 5: ADMIN GOVERNANCE & NOTIFICATIONS
+    console.log('\n--- 5. ADMIN GOVERNANCE & NOTIFICATIONS TESTS ---');
+
+    // Admin Stats
+    const adminStatsRes = await request(app)
+      .get('/api/admin/stats')
+      .set('Authorization', `Bearer ${adminToken}`);
+    assert(adminStatsRes.status === 200 && adminStatsRes.body.stats.totalUsers >= 3, 'Admin stats endpoint returns platform analytics');
+
+    // Non-admin block from admin stats
+    const nonAdminStatsRes = await request(app)
+      .get('/api/admin/stats')
+      .set('Authorization', `Bearer ${customerToken}`);
+    assert(nonAdminStatsRes.status === 403, 'Non-admin blocked from accessing admin endpoints (403)');
+
+    // Admin Toggle User Status
+    const toggleStatusRes = await request(app)
+      .patch(`/api/admin/users/${customerId}/status`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ isActive: false });
+    assert(toggleStatusRes.status === 200 && toggleStatusRes.body.user.isActive === false, 'Admin can toggle user active status');
+
+    // Verify deactivated user cannot log in
+    const deactivatedLoginRes = await request(app).post('/api/auth/login').send({
+      email: customerPayload.email,
+      password: customerPayload.password,
+    });
+    assert(deactivatedLoginRes.status === 403, 'Deactivated user blocked from logging in (403)');
+
+    // Re-activate user
+    await request(app)
+      .patch(`/api/admin/users/${customerId}/status`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ isActive: true });
+
+    // Notifications
+    const notifRes = await request(app)
+      .get('/api/notifications')
+      .set('Authorization', `Bearer ${providerToken}`);
+    assert(notifRes.status === 200 && notifRes.body.notifications.length > 0, 'User receives system notifications for booking requests');
 
   } catch (err) {
     console.error('\n❌ UNEXPECTED TEST ERROR:', err);

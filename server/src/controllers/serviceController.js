@@ -183,7 +183,7 @@ exports.updateService = async (req, res, next) => {
     };
 
     service = await Service.findByIdAndUpdate(req.params.id, fieldsToUpdate, {
-      new: true,
+      returnDocument: 'after',
       runValidators: true,
     }).populate('provider', 'name email phone location rating numReviews');
 
