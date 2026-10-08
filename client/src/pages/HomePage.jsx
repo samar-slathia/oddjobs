@@ -94,7 +94,7 @@ const HomePage = () => {
           {/* Popular Search tags */}
           <div className="flex flex-wrap items-center gap-2 text-xs text-slate-300 pt-2">
             <span className="font-semibold text-slate-400">Popular:</span>
-            {['Electrician', 'Plumber', 'Cleaner', 'Carpenter', 'Painter'].map((cat) => (
+            {['AC Service', 'Electrician', 'Plumber', 'Cleaner', 'Carpenter', 'Painter'].map((cat) => (
               <Link
                 key={cat}
                 to={`/services?category=${cat}`}

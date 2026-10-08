@@ -1,6 +1,6 @@
 import React from 'react';
 import { Search, Filter, MapPin, DollarSign, Star, RotateCcw } from 'lucide-react';
-import { SERVICE_CATEGORIES } from '../../utils/formatters';
+import { SERVICE_CATEGORIES, AC_SERVICE_OPTIONS } from '../../utils/formatters';
 
 const ServiceFilter = ({ filters, onFilterChange, onReset }) => {
   const handleChange = (e) => {
@@ -104,7 +104,22 @@ const ServiceFilter = ({ filters, onFilterChange, onReset }) => {
       </div>
 
       {/* Reset filters row */}
-      <div className="flex justify-end mt-4 pt-3 border-t border-slate-100">
+      <div className="flex justify-between items-center mt-4 pt-3 border-t border-slate-100">
+        {filters.category === 'AC Service' ? (
+          <div className="flex items-center space-x-2">
+             <span className="text-xs font-bold text-slate-700 uppercase tracking-wider">Specific Service:</span>
+             <select
+               name="search"
+               value={filters.search || ''}
+               onChange={handleChange}
+               className="text-sm border border-slate-200 bg-slate-50 rounded-lg px-2 py-1 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+             >
+                <option value="">Any AC Service</option>
+                {AC_SERVICE_OPTIONS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+             </select>
+          </div>
+        ) : <div />}
+        
         <button
           onClick={onReset}
           className="inline-flex items-center space-x-1.5 text-xs font-semibold text-slate-500 hover:text-indigo-600 transition-colors"

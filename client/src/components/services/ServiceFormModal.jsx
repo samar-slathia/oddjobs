@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import Modal from '../common/Modal';
 import ErrorAlert from '../common/ErrorAlert';
 import { serviceService } from '../../services/serviceService';
-import { SERVICE_CATEGORIES } from '../../utils/formatters';
+import { SERVICE_CATEGORIES, AC_SERVICE_OPTIONS } from '../../utils/formatters';
 import { PlusCircle, Edit3 } from 'lucide-react';
 
 const ServiceFormModal = ({ isOpen, onClose, serviceToEdit, onSuccess }) => {
@@ -43,7 +43,13 @@ const ServiceFormModal = ({ isOpen, onClose, serviceToEdit, onSuccess }) => {
 
   const handleChange = (e) => {
     const { name, value } = e.target;
-    setFormData((prev) => ({ ...prev, [name]: value }));
+    setFormData((prev) => {
+      const next = { ...prev, [name]: value };
+      if (name === 'category' && value === 'AC Service' && prev.category !== 'AC Service') {
+        next.title = '';
+      }
+      return next;
+    });
   };
 
   const handleSubmit = async (e) => {
@@ -89,15 +95,30 @@ const ServiceFormModal = ({ isOpen, onClose, serviceToEdit, onSuccess }) => {
           <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
             Service Title *
           </label>
-          <input
-            type="text"
-            name="title"
-            value={formData.title}
-            onChange={handleChange}
-            required
-            placeholder="e.g. Master Electrical Wiring & Outlet Repair"
-            className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500"
-          />
+          {formData.category === 'AC Service' ? (
+            <select
+              name="title"
+              value={formData.title}
+              onChange={handleChange}
+              required
+              className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            >
+              <option value="" disabled>Select AC Service Type...</option>
+              {AC_SERVICE_OPTIONS.map((opt) => (
+                <option key={opt} value={opt}>{opt}</option>
+              ))}
+            </select>
+          ) : (
+            <input
+              type="text"
+              name="title"
+              value={formData.title}
+              onChange={handleChange}
+              required
+              placeholder="e.g. Master Electrical Wiring & Outlet Repair"
+              className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            />
+          )}
         </div>
 
         {/* Category & Price Type */}

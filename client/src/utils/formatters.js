@@ -5,11 +5,24 @@ export const SERVICE_CATEGORIES = [
   'Cleaner',
   'Carpenter',
   'Painter',
+  'AC Service',
   'Appliance Repair',
   'Tutor',
   'Mechanic',
   'Delivery & Helper',
   'Other',
+];
+
+export const AC_SERVICE_OPTIONS = [
+  'AC General Servicing',
+  'AC Cleaning',
+  'AC Deep Cleaning',
+  'AC Filter Cleaning',
+  'AC Installation',
+  'AC Uninstallation',
+  'AC Gas Refilling',
+  'AC Maintenance',
+  'AC Inspection',
 ];
 
 export const formatCurrency = (amount) => {
