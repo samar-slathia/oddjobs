@@ -105,13 +105,28 @@ app.use('/api/reviews', reviewRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/notifications', notificationRoutes);
 
-// Handle 404 routes
-app.use((req, res) => {
-  res.status(404).json({
-    success: false,
-    message: `API endpoint ${req.originalUrl} not found`,
+// Serve static assets in production
+const path = require('path');
+if (process.env.NODE_ENV === 'production') {
+  // Set static folder
+  app.use(express.static(path.join(__dirname, '../../client/dist')));
+
+  app.get('*', (req, res) => {
+    if (!req.originalUrl.startsWith('/api')) {
+      res.sendFile(path.resolve(__dirname, '../../client/dist', 'index.html'));
+    } else {
+      res.status(404).json({ success: false, message: `API endpoint ${req.originalUrl} not found` });
+    }
   });
-});
+} else {
+  // Handle 404 API routes in dev
+  app.use((req, res) => {
+    res.status(404).json({
+      success: false,
+      message: `API endpoint ${req.originalUrl} not found`,
+    });
+  });
+}
 
 // Global Error Handler
 app.use(errorHandler);

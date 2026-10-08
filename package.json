@@ -1,0 +1,17 @@
+{
+  "name": "oddjobs",
+  "version": "1.0.0",
+  "description": "OddJobs local services marketplace",
+  "scripts": {
+    "start": "cd server && npm start",
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
+    "dev:server": "cd server && npm run dev",
+    "dev:client": "cd client && npm run dev",
+    "build": "cd client && npm install && npm run build",
+    "install": "cd server && npm install && cd ../client && npm install",
+    "heroku-postbuild": "npm run build"
+  },
+  "dependencies": {
+    "concurrently": "^8.2.2"
+  }
+}

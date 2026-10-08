@@ -197,9 +197,25 @@ npm test
 
 ---
 
+## 🚀 Production Deployment
+
+OddJobs is ready for single-server production deployment (e.g., Heroku, Render, VPS). The Express backend is configured to statically serve the built Vite frontend when NODE_ENV=production.
+
+1. Set your environment variables (e.g., MONGODB_URI, JWT_SECRET, NODE_ENV=production).
+2. From the **root** folder, run:
+`ash
+npm install
+npm run build
+npm start
+`
+*(The root package.json will automatically install dependencies for both client and server, build the frontend, and start the Express server).*
+
+---
+
 ## 🛡️ Security Architecture
 
 1. **HttpOnly Cookie JWT Storage**: JWTs are transmitted via HttpOnly cookies with `SameSite: 'lax'` to protect against XSS token theft, with Bearer header fallback for API testing.
 2. **Password Security**: Passwords are salted and hashed using `bcryptjs` with cost factor 10. Passwords are never returned in JSON responses (`select: false`).
 3. **Role-Based Authorization (RBAC)**: Strict `protect` and `authorize('customer', 'service_provider', 'admin')` middleware enforces server-side permission checks.
 4. **Rate Limiting & Security Headers**: Helmet protects against common web vulnerabilities, while `express-rate-limit` prevents brute-force login attempts.
+5. **No Public Admin Creation**: The API explicitly blocks creating admin accounts via the public registration endpoint (/api/auth/register).
