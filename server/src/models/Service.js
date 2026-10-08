@@ -6,11 +6,11 @@ const serviceCategories = [
   'Cleaner',
   'Carpenter',
   'Painter',
-  'AC Service',
   'Appliance Repair',
   'Tutor',
   'Mechanic',
   'Delivery & Helper',
+  'AC Service',
   'Other',
 ];
 

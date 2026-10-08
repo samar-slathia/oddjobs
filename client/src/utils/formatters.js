@@ -5,11 +5,11 @@ export const SERVICE_CATEGORIES = [
   'Cleaner',
   'Carpenter',
   'Painter',
-  'AC Service',
   'Appliance Repair',
   'Tutor',
   'Mechanic',
   'Delivery & Helper',
+  'AC Service',
   'Other',
 ];
 
