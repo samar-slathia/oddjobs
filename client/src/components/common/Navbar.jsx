@@ -119,6 +119,16 @@ const Navbar = () => {
                 >
                   My Requests
                 </Link>
+                <Link
+                  to="/customer/history"
+                  className={`text-sm font-medium transition-colors ${
+                    location.pathname === '/customer/history'
+                      ? 'text-indigo-600 font-semibold'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  History
+                </Link>
               </>
             )}
 
@@ -320,6 +330,13 @@ const Navbar = () => {
                     className="block px-3 py-2 text-sm font-medium text-slate-700 rounded-lg hover:bg-slate-50"
                   >
                     My Requests
+                  </Link>
+                  <Link
+                    to="/customer/history"
+                    onClick={() => setMobileMenuOpen(false)}
+                    className="block px-3 py-2 text-sm font-medium text-slate-700 rounded-lg hover:bg-slate-50"
+                  >
+                    History
                   </Link>
                 </>
               )}

@@ -11,6 +11,7 @@ import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
 
 import CustomerDashboard from './pages/customer/CustomerDashboard';
+import CustomerHistoryPage from './pages/customer/CustomerHistoryPage';
 import ProviderDashboard from './pages/provider/ProviderDashboard';
 import ProviderRequestsPage from './pages/provider/ProviderRequestsPage';
 import ProviderServicesPage from './pages/provider/ProviderServicesPage';
@@ -43,6 +44,14 @@ function App() {
             element={
               <ProtectedRoute allowedRoles={['customer', 'admin']}>
                 <CustomerDashboard />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/customer/history"
+            element={
+              <ProtectedRoute allowedRoles={['customer', 'admin']}>
+                <CustomerHistoryPage />
               </ProtectedRoute>
             }
           />

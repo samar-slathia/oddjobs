@@ -1,0 +1,186 @@
+import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { useAuth } from '../../context/AuthContext';
+import { bookingService } from '../../services/bookingService';
+import BookingCard from '../../components/bookings/BookingCard';
+import ReviewModal from '../../components/reviews/ReviewModal';
+import LoadingSpinner from '../../components/common/LoadingSpinner';
+import ErrorAlert from '../../components/common/ErrorAlert';
+import { formatCurrency } from '../../utils/formatters';
+import { History, CheckCircle2, DollarSign, Calendar, RefreshCw } from 'lucide-react';
+
+const CustomerHistoryPage = () => {
+  const navigate = useNavigate();
+  const { user } = useAuth();
+  const [bookings, setBookings] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [activeTab, setActiveTab] = useState('completed');
+
+  const [reviewModalOpen, setReviewModalOpen] = useState(false);
+  const [selectedBookingForReview, setSelectedBookingForReview] = useState(null);
+
+  const fetchBookings = async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      const data = await bookingService.getBookings();
+      if (data.success) {
+        setBookings(data.bookings);
+      }
+    } catch (err) {
+      setError(err.message || 'Failed to load bookings.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchBookings();
+  }, []);
+
+  const handleStatusChange = async (bookingId, newStatus) => {
+    try {
+      setError(null);
+      const res = await bookingService.updateBookingStatus(bookingId, { status: newStatus });
+      if (res.success) {
+        setBookings((prev) =>
+          prev.map((b) => (b._id === bookingId ? res.booking : b))
+        );
+      }
+    } catch (err) {
+      setError(err.message || 'Failed to update booking status.');
+    }
+  };
+
+  const handleOpenReviewModal = (booking) => {
+    setSelectedBookingForReview(booking);
+    setReviewModalOpen(true);
+  };
+
+  const handleReviewSubmitted = () => {
+    fetchBookings();
+  };
+
+  // Only consider completed or cancelled jobs for history
+  const historyBookings = bookings.filter((b) => ['completed', 'cancelled'].includes(b.status));
+
+  const filteredBookings = historyBookings.filter((b) => {
+    return b.status === activeTab;
+  });
+
+  const completedCount = historyBookings.filter((b) => b.status === 'completed').length;
+  
+  const totalSpent = historyBookings
+    .filter((b) => b.status === 'completed')
+    .reduce((sum, b) => sum + (b.price || 0), 0);
+
+  return (
+    <div className="space-y-8 pb-16">
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-extrabold text-slate-900">
+            Booking History
+          </h1>
+          <p className="text-xs text-slate-500">View your past service requests and leave reviews</p>
+        </div>
+        <div className="flex items-center space-x-3">
+          <button
+            onClick={() => navigate('/customer')}
+            className="inline-flex items-center space-x-1.5 px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors"
+          >
+            <span>Back to Active</span>
+          </button>
+          <button
+            onClick={fetchBookings}
+            className="inline-flex items-center space-x-1.5 px-3 py-2 bg-indigo-50 border border-indigo-100 rounded-xl text-xs font-semibold text-indigo-700 hover:bg-indigo-100 transition-colors"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            <span>Refresh History</span>
+          </button>
+        </div>
+      </div>
+
+      <ErrorAlert message={error} onClose={() => setError(null)} />
+
+      {/* Overview Stat Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+        <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs flex items-center space-x-4">
+          <div className="w-12 h-12 bg-emerald-50 text-emerald-600 rounded-2xl flex items-center justify-center font-bold">
+            <CheckCircle2 className="w-6 h-6" />
+          </div>
+          <div>
+            <p className="text-xs text-slate-500 font-semibold uppercase">Completed Jobs</p>
+            <p className="text-2xl font-extrabold text-slate-900">{completedCount}</p>
+          </div>
+        </div>
+
+        <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs flex items-center space-x-4">
+          <div className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center font-bold">
+            <DollarSign className="w-6 h-6" />
+          </div>
+          <div>
+            <p className="text-xs text-slate-500 font-semibold uppercase">Total Spent</p>
+            <p className="text-2xl font-extrabold text-slate-900">{formatCurrency(totalSpent)}</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Tabs Filter */}
+      <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 pb-3">
+        {[
+          { id: 'completed', label: `Completed (${completedCount})` },
+          { id: 'cancelled', label: 'Cancelled' },
+        ].map((tab) => (
+          <button
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-colors ${
+              activeTab === tab.id
+                ? 'bg-indigo-600 text-white shadow-xs'
+                : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Bookings List */}
+      {loading ? (
+        <LoadingSpinner message="Fetching your service history..." />
+      ) : filteredBookings.length === 0 ? (
+        <div className="text-center py-16 bg-white rounded-2xl border border-slate-200 space-y-3">
+          <History className="w-12 h-12 text-slate-300 mx-auto" />
+          <h3 className="text-base font-bold text-slate-800">No History Found</h3>
+          <p className="text-xs text-slate-500">
+            You don't have any bookings under the "{activeTab}" filter.
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {filteredBookings.map((b) => (
+            <BookingCard
+              key={b._id}
+              booking={b}
+              userRole="customer"
+              onStatusChange={handleStatusChange}
+              onOpenReviewModal={handleOpenReviewModal}
+            />
+          ))}
+        </div>
+      )}
+
+      {/* Review Modal */}
+      <ReviewModal
+        isOpen={reviewModalOpen}
+        onClose={() => setReviewModalOpen(false)}
+        booking={selectedBookingForReview}
+        onSuccess={handleReviewSubmitted}
+      />
+    </div>
+  );
+};
+
+export default CustomerHistoryPage;
