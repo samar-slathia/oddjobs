@@ -41,6 +41,19 @@ const userSchema = new mongoose.Schema(
       trim: true,
       default: '',
     },
+    locationCoords: {
+      type: {
+        type: String,
+        enum: ['Point'],
+      },
+      coordinates: {
+        type: [Number],
+      }
+    },
+    serviceRadiusKm: {
+      type: Number,
+      default: 10,
+    },
     bio: {
       type: String,
       trim: true,
@@ -70,6 +83,8 @@ const userSchema = new mongoose.Schema(
     timestamps: true,
   }
 );
+
+userSchema.index({ locationCoords: '2dsphere' });
 
 // Hash password before saving (Async pre-hook in Mongoose 8)
 userSchema.pre('save', async function () {

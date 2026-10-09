@@ -210,6 +210,22 @@ exports.updateBookingStatus = async (req, res, next) => {
       });
     }
 
+    // Protect dispatch/mobile bookings from bypassing customer quote approval
+    if (booking.jobRequest && ['in_progress', 'completed'].includes(status)) {
+      if (booking.pricingModel === 'inspection' && !booking.quoteApproved) {
+        return res.status(400).json({
+          success: false,
+          message: 'Cannot progress or complete booking before customer quote approval on dispatch bookings',
+        });
+      }
+      if (booking.workflowStatus === 'quote_rejected') {
+        return res.status(400).json({
+          success: false,
+          message: 'Cannot progress booking: Proposed quote was rejected by the customer',
+        });
+      }
+    }
+
     // Update status and append to history
     booking.status = status;
     booking.statusHistory.push({

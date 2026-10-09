@@ -12,6 +12,14 @@ const bookingRoutes = require('./routes/bookingRoutes');
 const reviewRoutes = require('./routes/reviewRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const notificationRoutes = require('./routes/notificationRoutes');
+const jobRequestRoutes = require('./routes/jobRequestRoutes');
+const centralPricingRoutes = require('./routes/centralPricingRoutes');
+const bookingWorkflowRoutes = require('./routes/bookingWorkflowRoutes');
+const providerEarningsRoutes = require('./routes/providerEarningsRoutes');
+const { validateCommissionConfigOnStartup } = require('./config/commission');
+
+// Validate critical platform configurations at startup
+validateCommissionConfigOnStartup();
 
 const app = express();
 
@@ -104,6 +112,10 @@ app.use('/api/bookings', bookingRoutes);
 app.use('/api/reviews', reviewRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/notifications', notificationRoutes);
+app.use('/api/v2/job-requests', jobRequestRoutes);
+app.use('/api/v2/pricing', centralPricingRoutes);
+app.use('/api/v2/bookings', bookingWorkflowRoutes);
+app.use('/api/v2/provider', providerEarningsRoutes);
 
 // Serve static assets in production
 const path = require('path');

@@ -77,4 +77,4 @@ serviceSchema.index({ category: 1, location: 1, price: 1, rating: -1 });
 serviceSchema.index({ title: 'text', description: 'text' });
 
 module.exports = mongoose.model('Service', serviceSchema);
-module.serviceCategories = serviceCategories;
+module.exports.serviceCategories = serviceCategories;

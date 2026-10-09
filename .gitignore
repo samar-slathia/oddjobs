@@ -2,6 +2,7 @@
 node_modules/
 client/node_modules/
 server/node_modules/
+mobile/node_modules/
 
 # Environment variables
 .env
@@ -11,6 +12,8 @@ server/node_modules/
 .env.production.local
 server/.env
 client/.env
+mobile/.env
+mobile/.env.local
 
 # Build outputs
 dist/

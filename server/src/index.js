@@ -18,6 +18,8 @@ connectDB().then(() => {
     console.log(`=================================`);
   });
 
+  require("./workers/expiryWorker")();
+
   // Handle unhandled promise rejections
   process.on('unhandledRejection', (err) => {
     console.error(`Unhandled Rejection Error: ${err.message}`);
