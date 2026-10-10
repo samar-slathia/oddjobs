@@ -17,6 +17,11 @@ const {
   getPlatformCommissionPercentage,
   calculateCommissionAndEarnings,
 } = require('../src/config/commission');
+const {
+  verifyBookingSettlement,
+  reconcilePendingSettlements,
+  completeAndSettleBooking,
+} = require('../src/services/settlementService');
 
 async function runPhase5BTests() {
   console.log('=====================================================');
@@ -445,6 +450,11 @@ async function runPhase5BTests() {
     assert(commissionEntry && commissionEntry.amountPaise === 8000, 'Platform commission is 20% on labour only = ₹80.00 (8000 paise; materials excluded!)');
     assert(earningEntry && earningEntry.amountPaise === 62000, 'Provider net earning = (₹400 - ₹80 commission) + ₹300 materials = ₹620.00 (62000 paise)');
 
+    // Verify customer charge and promotional subsidy on approved repair
+    assert(completedBooking.finalFinancials.totalCustomerChargePaise === 70000, 'Customer charged full quote amount (₹400 labour + ₹300 materials = ₹700.00 / 70000 paise)');
+    assert(completedBooking.finalFinancials.promotionalSubsidyPaise === 0, 'No platform promotional subsidy on approved repair quote');
+    assert(completedBooking.finalFinancials.settlementStatus === 'settled', 'Final financial settlement status is marked settled');
+
     // Idempotency: Repeating completion does NOT create duplicate ledger entries
     const repeatCompleteRes = await request(app)
       .post('/api/v2/bookings/' + promoBookingId + '/complete')
@@ -525,6 +535,931 @@ async function runPhase5BTests() {
       });
     assert(c2NextReqRes.body.jobRequest.isFreeInspection === true, 'Customer 2 successfully reclaims free inspection after earlier cancellation');
 
+    // ----------------------------------------------------
+    // SECTION 9: PHASE 1 REGRESSION TESTS — SUBSIDY CAP, REPAIR BILLING, PARTIAL FAILURE RECOVERY & IDEMPOTENCY
+    // ----------------------------------------------------
+    console.log('\n--- 9. PHASE 1 REGRESSION TESTS ---');
+
+    // 9.1 Unit regression: Diagnostic subsidy cap and approved quote separation
+    const calcDiagCapped = calculateCommissionAndEarnings({
+      labourAmountPaise: 15000, // Provider claims 150.00 for diagnosis
+      materialsAmountPaise: 0,
+      commissionRate: 20,
+      isFreeInspection: true,
+      hasApprovedQuote: false,
+      standardInspectionFeePaise: 9900,
+    });
+    assert(calcDiagCapped.promotionalSubsidyPaise === 9900, 'Diagnostic subsidy strictly capped at standard inspection fee (9900 paise / ₹99.00)');
+    assert(calcDiagCapped.waivedAmountPaise === 9900, 'Waived amount capped at ₹99.00');
+    assert(calcDiagCapped.customerChargePaise === 5100, 'Customer charged remaining 5100 paise beyond capped subsidy');
+
+    const calcApprovedRepair = calculateCommissionAndEarnings({
+      labourAmountPaise: 50000, // ₹500 labour
+      materialsAmountPaise: 20000, // ₹200 materials
+      commissionRate: 20,
+      isFreeInspection: true,
+      hasApprovedQuote: true, // Customer approved repair quote!
+      standardInspectionFeePaise: 9900,
+    });
+    assert(calcApprovedRepair.customerChargePaise === 70000, 'Customer charged full approved repair quote (₹500 labour + ₹200 materials = ₹700 / 70000 paise)');
+    assert(calcApprovedRepair.waivedAmountPaise === 0, 'Approved repair labour is NOT waived');
+    assert(calcApprovedRepair.promotionalSubsidyPaise === 0, 'Platform promotional subsidy is ₹0 on approved repair quote');
+    assert(calcApprovedRepair.commissionPaise === 10000, 'Platform commission is 20% on labour only (₹100 / 10000 paise; materials excluded)');
+    assert(calcApprovedRepair.netProviderEarningPaise === 60000, 'Provider net earning = (₹500 - ₹100) + ₹200 = ₹600 / 60000 paise');
+
+    // 9.2 End-to-end: Customer 2 approved repair after free inspection
+    const c2JobReqId = c2NextReqRes.body.jobRequest._id;
+    const acceptC2Res = await request(app)
+      .post('/api/v2/job-requests/' + c2JobReqId + '/accept')
+      .set('Authorization', 'Bearer ' + p1Token);
+    assert(acceptC2Res.status === 200, 'Provider accepts Customer 2 free-inspection request');
+
+    const c2BookingId = acceptC2Res.body.booking._id;
+    await request(app).post('/api/v2/bookings/' + c2BookingId + '/arrive').set('Authorization', 'Bearer ' + p1Token);
+    await request(app).post('/api/v2/bookings/' + c2BookingId + '/start-inspection').set('Authorization', 'Bearer ' + p1Token);
+
+    // Provider submits Quote with ₹600 labour + ₹250 materials
+    const c2QuoteRes = await request(app)
+      .post('/api/v2/bookings/' + c2BookingId + '/quote')
+      .set('Authorization', 'Bearer ' + p1Token)
+      .send({
+        labourAmountPaise: 60000,
+        materials: [{ item: 'Contactor Switch', quantity: 1, unitPricePaise: 25000 }],
+      });
+    assert(c2QuoteRes.status === 200, 'Provider submits repair quote for Customer 2');
+
+    // Customer 2 approves quote
+    const c2ApproveRes = await request(app)
+      .post('/api/v2/bookings/' + c2BookingId + '/quote/approve')
+      .set('Authorization', 'Bearer ' + c2Token)
+      .send({ quoteVersion: 1, totalAmountPaise: 85000 });
+    assert(c2ApproveRes.status === 200, 'Customer 2 approves repair quote (85000 paise)');
+
+    await request(app).post('/api/v2/bookings/' + c2BookingId + '/start-work').set('Authorization', 'Bearer ' + p1Token);
+
+    // Provider completes job
+    const c2CompleteRes = await request(app)
+      .post('/api/v2/bookings/' + c2BookingId + '/complete')
+      .set('Authorization', 'Bearer ' + p1Token);
+    assert(c2CompleteRes.status === 200, 'Provider completes Customer 2 job');
+
+    const c2CompletedBooking = await Booking.findById(c2BookingId);
+    assert(c2CompletedBooking.finalFinancials.totalCustomerChargePaise === 85000, 'Customer 2 charged full quote total (85000 paise / ₹850)');
+    assert(c2CompletedBooking.finalFinancials.promotionalSubsidyPaise === 0, 'No promotional subsidy on Customer 2 approved repair');
+    assert(c2CompletedBooking.finalFinancials.waivedAmountPaise === 0, 'No repair labour waived for Customer 2');
+    assert(c2CompletedBooking.finalFinancials.netProviderEarningPaise === 73000, 'Provider net earning = (₹600 - ₹120 commission) + ₹250 = ₹730 / 73000 paise');
+
+    const c2LedgerEntries = await LedgerEntry.find({ booking: c2BookingId });
+    assert(c2LedgerEntries.length === 4, 'Exactly 4 ledger entries created for Customer 2 repair job (no promo subsidy entry)');
+    const c2PromoLedger = c2LedgerEntries.find((e) => e.entryType === 'promotional_subsidy');
+    assert(!c2PromoLedger, 'No promotional_subsidy ledger entry written for approved repair quote');
+
+    const c2PromoDocFinal = await PromotionRedemption.findOne({ booking: c2BookingId });
+    assert(c2PromoDocFinal && c2PromoDocFinal.status === 'redeemed', 'Customer 2 PromotionRedemption marked redeemed');
+
+    // 9.3 Injected database failure & retry recovery
+    // Create a new booking for failure simulation
+    const failureBooking = await Booking.create({
+      customer: customer1._id,
+      provider: provider1._id,
+      service: (await Service.findOne({ provider: provider1._id }))._id,
+      scheduledDate: new Date(),
+      address: '789 Failure Injection Lane',
+      price: 500,
+      pricingModel: 'fixed',
+      workflowStatus: 'work_in_progress',
+      status: 'in_progress',
+      commissionRateSnapshot: 20,
+    });
+
+    // Simulate an injected failure during ledger entries write
+    const originalFindOneAndUpdate = LedgerEntry.findOneAndUpdate;
+    let findOneAndUpdateCount = 0;
+    LedgerEntry.findOneAndUpdate = function (...args) {
+      findOneAndUpdateCount++;
+      if (findOneAndUpdateCount === 2) {
+        throw new Error('Injected simulated database error on second ledger write');
+      }
+      return originalFindOneAndUpdate.apply(this, args);
+    };
+
+    let partialFailed = false;
+    try {
+      await request(app)
+        .post('/api/v2/bookings/' + failureBooking._id + '/complete')
+        .set('Authorization', 'Bearer ' + p1Token);
+    } catch (_) {
+      partialFailed = true;
+    } finally {
+      LedgerEntry.findOneAndUpdate = originalFindOneAndUpdate; // Restore original immediately
+    }
+
+    // Inspect intermediate state after failure
+    const interruptedBooking = await Booking.findById(failureBooking._id);
+    assert(
+      interruptedBooking.finalFinancials?.settlementStatus === 'pending_settlement',
+      'Interrupted booking records settlementStatus as pending_settlement'
+    );
+    const interruptedLedgerCount = await LedgerEntry.countDocuments({ booking: failureBooking._id });
+    assert(interruptedLedgerCount === 1, 'Only 1 ledger entry exists before failure interruption');
+
+    // Retry completion — must recover gracefully and complete all records!
+    const retryRes = await request(app)
+      .post('/api/v2/bookings/' + failureBooking._id + '/complete')
+      .set('Authorization', 'Bearer ' + p1Token);
+    assert(retryRes.status === 200, 'Retry completion returns 200 OK after partial failure');
+
+    const recoveredBooking = await Booking.findById(failureBooking._id);
+    assert(
+      recoveredBooking.finalFinancials?.settlementStatus === 'settled',
+      'Recovered booking records settlementStatus as settled after retry'
+    );
+
+    const recoveredLedgerEntries = await LedgerEntry.find({ booking: failureBooking._id });
+    assert(recoveredLedgerEntries.length === 3, 'All 3 required ledger entries exist after recovery');
+    const labourEntriesCount = recoveredLedgerEntries.filter((e) => e.entryType === 'labour_charge').length;
+    assert(labourEntriesCount === 1, 'Idempotency key strictly prevented duplicate labour_charge entry on retry');
+
+    // Third call — idempotent
+    const repeatFailureBookingRes = await request(app)
+      .post('/api/v2/bookings/' + failureBooking._id + '/complete')
+      .set('Authorization', 'Bearer ' + p1Token);
+    assert(repeatFailureBookingRes.status === 200, 'Subsequent repeat call returns 200 OK');
+    const finalCount = await LedgerEntry.countDocuments({ booking: failureBooking._id });
+    assert(finalCount === 3, 'Ledger entry count remains strictly unchanged across duplicate completion calls');
+
+    // 9.4 Diagnosis-only free inspection end-to-end
+    const customer3 = await User.create({
+      name: 'Customer Three',
+      email: 'c3@test.com',
+      password: 'password123',
+      role: 'customer',
+    });
+    const c3Token = (await request(app).post('/api/auth/login').send({ email: 'c3@test.com', password: 'password123' })).body.token;
+
+    const c3ReqRes = await request(app)
+      .post('/api/v2/job-requests')
+      .set('Authorization', 'Bearer ' + c3Token)
+      .send({
+        category: 'AC Service',
+        requestType: 'inspection',
+        problemDescription: 'C3 diagnostic check',
+        address: '101 Diagnostic Lane',
+        coordinates: [77.2090, 28.6139],
+      });
+    const c3JobReqId = c3ReqRes.body.jobRequest._id;
+    assert(c3ReqRes.body.jobRequest.isFreeInspection === true, 'Customer 3 receives free inspection reservation');
+
+    const acceptC3Res = await request(app)
+      .post('/api/v2/job-requests/' + c3JobReqId + '/accept')
+      .set('Authorization', 'Bearer ' + p1Token);
+    const c3BookingId = acceptC3Res.body.booking._id;
+
+    await request(app).post('/api/v2/bookings/' + c3BookingId + '/arrive').set('Authorization', 'Bearer ' + p1Token);
+    await request(app).post('/api/v2/bookings/' + c3BookingId + '/start-inspection').set('Authorization', 'Bearer ' + p1Token);
+
+    // Provider diagnoses unit without quote (diagnosis only)
+    const c3CompleteRes = await request(app)
+      .post('/api/v2/bookings/' + c3BookingId + '/complete')
+      .set('Authorization', 'Bearer ' + p1Token);
+    assert(c3CompleteRes.status === 200, 'Provider completes diagnostic-only inspection for Customer 3');
+
+    const c3CompletedBooking = await Booking.findById(c3BookingId);
+    assert(c3CompletedBooking.finalFinancials.totalCustomerChargePaise === 0, 'Customer 3 charged ₹0 for free diagnostic inspection');
+    assert(c3CompletedBooking.finalFinancials.promotionalSubsidyPaise === 9900, 'Platform promotional subsidy is capped at ₹99 (9900 paise)');
+    assert(c3CompletedBooking.finalFinancials.waivedAmountPaise === 9900, 'Waived amount is recorded as ₹99 (9900 paise)');
+    assert(c3CompletedBooking.finalFinancials.netProviderEarningPaise === 7920, 'Provider receives ₹79.20 (9900 - 1980 commission) net earnings');
+
+    const c3LedgerEntries = await LedgerEntry.find({ booking: c3BookingId });
+    const c3SubsidyEntry = c3LedgerEntries.find((e) => e.entryType === 'promotional_subsidy');
+    assert(c3SubsidyEntry && c3SubsidyEntry.amountPaise === 9900, 'Promotional subsidy ledger entry posted for diagnostic inspection (9900 paise)');
+
+    const c3PromoDoc = await PromotionRedemption.findOne({ booking: c3BookingId });
+    assert(c3PromoDoc && c3PromoDoc.status === 'redeemed', 'Customer 3 PromotionRedemption marked redeemed');
+
+    // ----------------------------------------------------
+    // SECTION 10: PHASE 1.1 SETTLEMENT VERIFICATION & AUTOMATIC RECOVERY
+    // ----------------------------------------------------
+    console.log('\n--- 10. PHASE 1.1 SETTLEMENT VERIFICATION & AUTOMATIC RECOVERY ---');
+
+    // 10.1 Missing required entry reconciliation
+    const bMissing = await Booking.create({
+      customer: customer1._id,
+      provider: provider1._id,
+      service: (await Service.findOne({ provider: provider1._id }))._id,
+      scheduledDate: new Date(),
+      address: '10 Missing Entry Way',
+      price: 500,
+      pricingModel: 'fixed',
+      workflowStatus: 'completed',
+      status: 'completed',
+      commissionRateSnapshot: 20,
+      finalFinancials: {
+        calculated: true,
+        labourPaise: 50000,
+        materialsPaise: 0,
+        totalCustomerChargePaise: 50000,
+        commissionRate: 20,
+        commissionPaise: 10000,
+        netProviderEarningPaise: 40000,
+        settlementStatus: 'pending_settlement',
+      },
+    });
+
+    // Write ONLY labour and commission entries (provider_earning is missing)
+    await LedgerEntry.create({
+      booking: bMissing._id,
+      provider: provider1._id,
+      customer: customer1._id,
+      entryType: 'labour_charge',
+      amountPaise: 50000,
+      currency: 'INR',
+      idempotencyKey: `${bMissing._id}_labour`,
+      description: 'Labour charge',
+      settlementStatus: 'calculated',
+    });
+    await LedgerEntry.create({
+      booking: bMissing._id,
+      provider: provider1._id,
+      customer: customer1._id,
+      entryType: 'platform_commission',
+      amountPaise: 10000,
+      currency: 'INR',
+      idempotencyKey: `${bMissing._id}_commission`,
+      description: 'Commission',
+      settlementStatus: 'calculated',
+    });
+
+    const missingCalc = {
+      labourPaise: 50000,
+      materialsPaise: 0,
+      commissionRate: 20,
+      commissionPaise: 10000,
+      netProviderEarningPaise: 40000,
+      customerChargePaise: 50000,
+      promotionalSubsidyPaise: 0,
+      waivedAmountPaise: 0,
+    };
+
+    const verifyMissingRes = await verifyBookingSettlement(bMissing, missingCalc, false);
+    assert(verifyMissingRes.isValid === false, 'Settlement verification detects incomplete ledger entries');
+    assert(verifyMissingRes.missingEntries.length === 1, 'Exactly one required entry missing');
+    assert(
+      verifyMissingRes.missingEntries[0].entryType === 'provider_earning',
+      'Verification precisely identifies provider_earning as missing entry'
+    );
+
+    // Calling completeAndSettleBooking safely reconciles the missing entry
+    await completeAndSettleBooking(bMissing, missingCalc, false, { now: new Date(), updatedBy: provider1._id });
+    const bMissingPost = await Booking.findById(bMissing._id);
+    assert(
+      bMissingPost.finalFinancials.settlementStatus === 'settled',
+      'Booking reconciled to settled status after missing entry written'
+    );
+    const bMissingEntries = await LedgerEntry.find({ booking: bMissing._id });
+    assert(bMissingEntries.length === 3, 'All 3 ledger entries now present in database');
+    assert(
+      bMissingEntries.some((e) => e.entryType === 'provider_earning' && e.amountPaise === 40000),
+      'Missing provider_earning created with exact expected amount (40000 paise)'
+    );
+
+    // 10.2 Incorrect-amount detection without overwriting
+    const bWrongAmount = await Booking.create({
+      customer: customer1._id,
+      provider: provider1._id,
+      service: (await Service.findOne({ provider: provider1._id }))._id,
+      scheduledDate: new Date(),
+      address: '20 Corrupted Amount Blvd',
+      price: 500,
+      pricingModel: 'fixed',
+      workflowStatus: 'work_in_progress',
+      status: 'in_progress',
+      commissionRateSnapshot: 20,
+    });
+
+    // Insert corrupted labour entry with wrong amount (1000 paise instead of 50000)
+    await LedgerEntry.create({
+      booking: bWrongAmount._id,
+      provider: provider1._id,
+      customer: customer1._id,
+      entryType: 'labour_charge',
+      amountPaise: 1000,
+      currency: 'INR',
+      idempotencyKey: `${bWrongAmount._id}_labour`,
+      description: 'Corrupted labour charge',
+      settlementStatus: 'calculated',
+    });
+
+    const verifyWrongRes = await verifyBookingSettlement(bWrongAmount, missingCalc, false);
+    assert(verifyWrongRes.isValid === false, 'Verification detects corrupted ledger entry amount');
+    assert(verifyWrongRes.inconsistentEntries.length === 1, 'Inconsistent entries detected');
+    assert(
+      verifyWrongRes.inconsistentEntries[0].entryType === 'labour_charge',
+      'Inconsistent entry identified as labour_charge'
+    );
+    assert(
+      verifyWrongRes.inconsistentEntries[0].expectedAmountPaise === 50000 &&
+        verifyWrongRes.inconsistentEntries[0].actualAmountPaise === 1000,
+      'Inconsistent entry reflects expected vs actual amount mismatch'
+    );
+
+    // Attempting completion via API must reject with 409 Conflict
+    const wrongAmtRes = await request(app)
+      .post('/api/v2/bookings/' + bWrongAmount._id + '/complete')
+      .set('Authorization', 'Bearer ' + p1Token);
+    assert(wrongAmtRes.status === 409, 'Completion endpoint returns 409 Conflict on ledger amount mismatch');
+
+    // Verify existing entry was NOT overwritten and booking is NOT marked settled
+    const preservedEntry = await LedgerEntry.findOne({ booking: bWrongAmount._id, entryType: 'labour_charge' });
+    assert(
+      preservedEntry.amountPaise === 1000,
+      'Existing ledger entry amount strictly preserved (NOT silently overwritten)'
+    );
+    const bWrongDb = await Booking.findById(bWrongAmount._id);
+    assert(
+      bWrongDb.finalFinancials?.settlementStatus !== 'settled',
+      'Booking with amount inconsistency is NOT marked settled'
+    );
+
+    // 10.3 Extraneous entry count deception
+    const bDeception = await Booking.create({
+      customer: customer1._id,
+      provider: provider1._id,
+      service: (await Service.findOne({ provider: provider1._id }))._id,
+      scheduledDate: new Date(),
+      address: '30 Count Deception Road',
+      price: 500,
+      pricingModel: 'fixed',
+      workflowStatus: 'completed',
+      status: 'completed',
+      commissionRateSnapshot: 20,
+      finalFinancials: {
+        calculated: true,
+        labourPaise: 50000,
+        materialsPaise: 0,
+        totalCustomerChargePaise: 50000,
+        commissionRate: 20,
+        commissionPaise: 10000,
+        netProviderEarningPaise: 40000,
+        settlementStatus: 'pending_settlement',
+      },
+    });
+
+    // Insert 3 entries: labour, commission, and extraneous reversal (provider_earning missing!)
+    await LedgerEntry.create({
+      booking: bDeception._id,
+      provider: provider1._id,
+      customer: customer1._id,
+      entryType: 'labour_charge',
+      amountPaise: 50000,
+      currency: 'INR',
+      idempotencyKey: `${bDeception._id}_labour`,
+      description: 'Labour charge',
+      settlementStatus: 'calculated',
+    });
+    await LedgerEntry.create({
+      booking: bDeception._id,
+      provider: provider1._id,
+      customer: customer1._id,
+      entryType: 'platform_commission',
+      amountPaise: 10000,
+      currency: 'INR',
+      idempotencyKey: `${bDeception._id}_commission`,
+      description: 'Commission',
+      settlementStatus: 'calculated',
+    });
+    await LedgerEntry.create({
+      booking: bDeception._id,
+      provider: provider1._id,
+      customer: customer1._id,
+      entryType: 'reversal',
+      amountPaise: 5000,
+      currency: 'INR',
+      idempotencyKey: `${bDeception._id}_extraneous_reversal`,
+      description: 'Extraneous entry',
+      settlementStatus: 'reversed',
+    });
+
+    const deceptionCount = await LedgerEntry.countDocuments({ booking: bDeception._id });
+    assert(deceptionCount === 3, 'Old countDocuments check sees count of 3');
+
+    const verifyDeceptionRes = await verifyBookingSettlement(bDeception, missingCalc, false);
+    assert(
+      verifyDeceptionRes.isValid === false,
+      'New entry verification rejects settlement despite total count reaching 3'
+    );
+    assert(
+      verifyDeceptionRes.missingEntries.some((e) => e.entryType === 'provider_earning'),
+      'Verification correctly flags missing provider_earning notwithstanding extraneous entry'
+    );
+    // Clean up deception test fixtures
+    await Booking.deleteOne({ _id: bDeception._id });
+    await LedgerEntry.deleteMany({ booking: bDeception._id });
+
+    // 10.4 Automatic recovery of stale pending settlement by worker
+    const bStale = await Booking.create({
+      customer: customer1._id,
+      provider: provider1._id,
+      service: (await Service.findOne({ provider: provider1._id }))._id,
+      scheduledDate: new Date(),
+      address: '40 Stale Settlement St',
+      price: 500,
+      pricingModel: 'fixed',
+      workflowStatus: 'completed',
+      status: 'completed',
+      commissionRateSnapshot: 20,
+      finalFinancials: {
+        calculated: true,
+        labourPaise: 50000,
+        materialsPaise: 0,
+        totalCustomerChargePaise: 50000,
+        commissionRate: 20,
+        commissionPaise: 10000,
+        netProviderEarningPaise: 40000,
+        settlementStatus: 'pending_settlement',
+      },
+    });
+
+    // Force updatedAt to 30 seconds ago in MongoDB
+    const pastDate = new Date(Date.now() - 30000);
+    await Booking.collection.updateOne({ _id: bStale._id }, { $set: { updatedAt: pastDate } });
+
+    const staleRecovery = await reconcilePendingSettlements({ staleThresholdMs: 15000 });
+    assert(staleRecovery.processedCount >= 1, 'Worker found stale pending settlement');
+    assert(staleRecovery.settledCount >= 1, 'Worker successfully settled stale booking');
+    assert(staleRecovery.failedCount === 0, 'Worker recorded 0 failures');
+
+    const bStalePost = await Booking.findById(bStale._id);
+    assert(bStalePost.finalFinancials.settlementStatus === 'settled', 'Stale booking transitioned to settled');
+    assert(bStalePost.finalFinancials.settlementClaimedAt === null, 'Claim lease released on settlement');
+    assert(bStalePost.finalFinancials.settlementClaimToken === null, 'Claim token cleared on settlement');
+
+    const staleEntries = await LedgerEntry.find({ booking: bStale._id });
+    assert(staleEntries.length === 3, 'Worker posted all 3 required ledger entries');
+
+    // 10.5 Two concurrent recovery attempts for the same booking
+    const bConcurrent = await Booking.create({
+      customer: customer1._id,
+      provider: provider1._id,
+      service: (await Service.findOne({ provider: provider1._id }))._id,
+      scheduledDate: new Date(),
+      address: '50 Concurrency Junction',
+      price: 500,
+      pricingModel: 'fixed',
+      workflowStatus: 'completed',
+      status: 'completed',
+      commissionRateSnapshot: 20,
+      finalFinancials: {
+        calculated: true,
+        labourPaise: 50000,
+        materialsPaise: 0,
+        totalCustomerChargePaise: 50000,
+        commissionRate: 20,
+        commissionPaise: 10000,
+        netProviderEarningPaise: 40000,
+        settlementStatus: 'pending_settlement',
+      },
+    });
+    await Booking.collection.updateOne({ _id: bConcurrent._id }, { $set: { updatedAt: pastDate } });
+
+    const leaseExpiry = new Date(Date.now() - 15000);
+    const claimFilter = {
+      _id: bConcurrent._id,
+      workflowStatus: 'completed',
+      'finalFinancials.settlementStatus': 'pending_settlement',
+      $or: [
+        { 'finalFinancials.settlementClaimedAt': null, updatedAt: { $lte: pastDate } },
+        { 'finalFinancials.settlementClaimedAt': { $lte: leaseExpiry } },
+      ],
+    };
+    const tokenA = new mongoose.Types.ObjectId().toString();
+    const tokenB = new mongoose.Types.ObjectId().toString();
+
+    // Simultaneously attempt claim
+    const [claimA, claimB] = await Promise.all([
+      Booking.findOneAndUpdate(
+        claimFilter,
+        { $set: { 'finalFinancials.settlementClaimedAt': new Date(), 'finalFinancials.settlementClaimToken': tokenA } },
+        { returnDocument: 'after' }
+      ),
+      Booking.findOneAndUpdate(
+        claimFilter,
+        { $set: { 'finalFinancials.settlementClaimedAt': new Date(), 'finalFinancials.settlementClaimToken': tokenB } },
+        { returnDocument: 'after' }
+      ),
+    ]);
+
+    const winnerCount = (claimA ? 1 : 0) + (claimB ? 1 : 0);
+    assert(winnerCount === 1, 'Exactly one concurrent worker acquisition succeeds via atomic CAS');
+
+    // Clean up concurrent fixture
+    await Booking.deleteOne({ _id: bConcurrent._id });
+
+    // 10.6 Retry after simulated failure & expired lease recovery
+    const bExpiredLease = await Booking.create({
+      customer: customer1._id,
+      provider: provider1._id,
+      service: (await Service.findOne({ provider: provider1._id }))._id,
+      scheduledDate: new Date(),
+      address: '60 Dead Worker Lease Lane',
+      price: 500,
+      pricingModel: 'fixed',
+      workflowStatus: 'completed',
+      status: 'completed',
+      commissionRateSnapshot: 20,
+      finalFinancials: {
+        calculated: true,
+        labourPaise: 50000,
+        materialsPaise: 0,
+        totalCustomerChargePaise: 50000,
+        commissionRate: 20,
+        commissionPaise: 10000,
+        netProviderEarningPaise: 40000,
+        settlementStatus: 'pending_settlement',
+        settlementClaimedAt: new Date(Date.now() - 30000), // Lease expired 30s ago
+        settlementClaimToken: 'dead-worker-claim-token',
+      },
+    });
+
+    const expiredLeaseRecovery = await reconcilePendingSettlements({ staleThresholdMs: 5000 });
+    assert(expiredLeaseRecovery.settledCount >= 1, 'Worker successfully recovers booking with expired lease');
+
+    const bExpiredDb = await Booking.findById(bExpiredLease._id);
+    assert(
+      bExpiredDb.finalFinancials.settlementStatus === 'settled',
+      'Booking with expired lease completed and settled'
+    );
+    assert(bExpiredDb.finalFinancials.settlementClaimToken === null, 'Claim token cleared');
+
+    // 10.7 Settled and ordinary bookings are not incorrectly modified
+    const bOrdinarySettled = await Booking.create({
+      customer: customer1._id,
+      provider: provider1._id,
+      service: (await Service.findOne({ provider: provider1._id }))._id,
+      scheduledDate: new Date(),
+      address: '70 Settled Ave',
+      price: 500,
+      pricingModel: 'fixed',
+      workflowStatus: 'completed',
+      status: 'completed',
+      commissionRateSnapshot: 20,
+      finalFinancials: {
+        calculated: true,
+        labourPaise: 50000,
+        materialsPaise: 0,
+        totalCustomerChargePaise: 50000,
+        commissionRate: 20,
+        commissionPaise: 10000,
+        netProviderEarningPaise: 40000,
+        settlementStatus: 'settled',
+      },
+    });
+
+    const bInProgress = await Booking.create({
+      customer: customer1._id,
+      provider: provider1._id,
+      service: (await Service.findOne({ provider: provider1._id }))._id,
+      scheduledDate: new Date(),
+      address: '80 Working Blvd',
+      price: 500,
+      pricingModel: 'fixed',
+      workflowStatus: 'work_in_progress',
+      status: 'in_progress',
+      commissionRateSnapshot: 20,
+    });
+
+    const ordinaryRun = await reconcilePendingSettlements({ staleThresholdMs: 0 });
+    assert(ordinaryRun.processedCount === 0, 'Worker ignores ordinary and already settled bookings');
+
+    const bOrdinaryCheck = await Booking.findById(bOrdinarySettled._id);
+    assert(bOrdinaryCheck.finalFinancials.settlementStatus === 'settled', 'Settled booking remains settled');
+
+    const bInProgressCheck = await Booking.findById(bInProgress._id);
+    assert(bInProgressCheck.status === 'in_progress', 'In-progress booking remains in_progress');
+
+    // ----------------------------------------------------
+    // SECTION 11: PHASE 2 FINANCIAL API PRIVACY & LEGACY COMPLETION PROTECTION
+    // ----------------------------------------------------
+    console.log('\n--- 11. PHASE 2 FINANCIAL API PRIVACY & LEGACY COMPLETION PROTECTION ---');
+
+    // 11.1 Customer responses do not expose internal commission or subsidy fields
+    const custViewRes = await request(app)
+      .get('/api/bookings/' + bOrdinarySettled._id)
+      .set('Authorization', 'Bearer ' + c1Token);
+    assert(custViewRes.status === 200, 'Customer retrieves their own booking (200 OK)');
+    const custBooking = custViewRes.body.booking;
+    assert(custBooking.commissionRateSnapshot === undefined, 'Customer cannot see root commissionRateSnapshot');
+    assert(
+      custBooking.finalFinancials && custBooking.finalFinancials.commissionRate === undefined,
+      'Customer cannot see finalFinancials.commissionRate'
+    );
+    assert(
+      custBooking.finalFinancials && custBooking.finalFinancials.commissionPaise === undefined,
+      'Customer cannot see finalFinancials.commissionPaise'
+    );
+    assert(
+      custBooking.finalFinancials && custBooking.finalFinancials.promotionalSubsidyPaise === undefined,
+      'Customer cannot see finalFinancials.promotionalSubsidyPaise'
+    );
+    assert(
+      custBooking.finalFinancials && custBooking.finalFinancials.netProviderEarningPaise === undefined,
+      'Customer cannot see provider private earnings (finalFinancials.netProviderEarningPaise)'
+    );
+    assert(
+      custBooking.finalFinancials && custBooking.finalFinancials.settlementStatus === undefined,
+      'Customer cannot see internal settlementStatus'
+    );
+    assert(
+      custBooking.finalFinancials && custBooking.finalFinancials.totalCustomerChargePaise === 50000,
+      'Customer can see their own total charge (totalCustomerChargePaise)'
+    );
+
+    // Customer bookings list
+    const custListRes = await request(app)
+      .get('/api/bookings')
+      .set('Authorization', 'Bearer ' + c1Token);
+    assert(custListRes.status === 200, 'Customer retrieves their bookings list');
+    const allCustBookingsOmitInternal = custListRes.body.bookings.every(
+      (b) =>
+        b.commissionRateSnapshot === undefined &&
+        (!b.finalFinancials ||
+          (b.finalFinancials.commissionRate === undefined &&
+            b.finalFinancials.commissionPaise === undefined &&
+            b.finalFinancials.promotionalSubsidyPaise === undefined &&
+            b.finalFinancials.netProviderEarningPaise === undefined))
+    );
+    assert(allCustBookingsOmitInternal, 'All bookings in customer list omit internal platform/provider financials');
+
+    // 11.2 Provider responses do not expose internal commission or subsidy fields, but retain provider earnings
+    const provViewRes = await request(app)
+      .get('/api/bookings/' + bOrdinarySettled._id)
+      .set('Authorization', 'Bearer ' + p1Token);
+    assert(provViewRes.status === 200, 'Provider retrieves their assigned booking (200 OK)');
+    const provBooking = provViewRes.body.booking;
+    assert(provBooking.commissionRateSnapshot === undefined, 'Provider cannot see root commissionRateSnapshot');
+    assert(
+      provBooking.finalFinancials && provBooking.finalFinancials.commissionRate === undefined,
+      'Provider cannot see finalFinancials.commissionRate'
+    );
+    assert(
+      provBooking.finalFinancials && provBooking.finalFinancials.commissionPaise === undefined,
+      'Provider cannot see finalFinancials.commissionPaise'
+    );
+    assert(
+      provBooking.finalFinancials && provBooking.finalFinancials.promotionalSubsidyPaise === undefined,
+      'Provider cannot see finalFinancials.promotionalSubsidyPaise'
+    );
+    assert(
+      provBooking.finalFinancials && provBooking.finalFinancials.netProviderEarningPaise === 40000,
+      'Provider CAN see their own net earnings (finalFinancials.netProviderEarningPaise = 40000)'
+    );
+
+    // Provider bookings list
+    const provListRes = await request(app)
+      .get('/api/bookings')
+      .set('Authorization', 'Bearer ' + p1Token);
+    assert(provListRes.status === 200, 'Provider retrieves their assigned bookings list');
+    const allProvBookingsOmitInternal = provListRes.body.bookings.every(
+      (b) =>
+        b.commissionRateSnapshot === undefined &&
+        (!b.finalFinancials ||
+          (b.finalFinancials.commissionRate === undefined &&
+            b.finalFinancials.commissionPaise === undefined &&
+            b.finalFinancials.promotionalSubsidyPaise === undefined))
+    );
+    assert(allProvBookingsOmitInternal, 'All bookings in provider list omit internal commission and subsidy fields');
+
+    // 11.3 Admin responses retain all fields required for governance & administration
+    const adminViewRes = await request(app)
+      .get('/api/bookings/' + bOrdinarySettled._id)
+      .set('Authorization', 'Bearer ' + adminToken);
+    assert(adminViewRes.status === 200, 'Admin retrieves booking (200 OK)');
+    const adminBooking = adminViewRes.body.booking;
+    assert(adminBooking.commissionRateSnapshot === 20, 'Admin can see commissionRateSnapshot (20)');
+    assert(
+      adminBooking.finalFinancials && adminBooking.finalFinancials.commissionRate === 20,
+      'Admin can see finalFinancials.commissionRate'
+    );
+    assert(
+      adminBooking.finalFinancials && adminBooking.finalFinancials.commissionPaise === 10000,
+      'Admin can see finalFinancials.commissionPaise (10000)'
+    );
+    assert(
+      adminBooking.finalFinancials && adminBooking.finalFinancials.netProviderEarningPaise === 40000,
+      'Admin can see finalFinancials.netProviderEarningPaise (40000)'
+    );
+    assert(
+      adminBooking.finalFinancials && adminBooking.finalFinancials.settlementStatus === 'settled',
+      'Admin can see finalFinancials.settlementStatus (settled)'
+    );
+
+    // 11.4 Cross-user authorization check (Customer isolation)
+    const crossCustRes = await request(app)
+      .get('/api/bookings/' + bOrdinarySettled._id)
+      .set('Authorization', 'Bearer ' + c2Token);
+    assert(crossCustRes.status === 403, 'Unauthorized customer blocked from viewing another customer booking (403)');
+
+    // 11.5 Cross-provider authorization check (Provider isolation)
+    const crossProvRes = await request(app)
+      .get('/api/bookings/' + bOrdinarySettled._id)
+      .set('Authorization', 'Bearer ' + p2Token);
+    assert(crossProvRes.status === 403, 'Unauthorized provider blocked from viewing unassigned booking (403)');
+
+    const crossProvEarningsRes = await request(app)
+      .get('/api/v2/provider/bookings/' + bOrdinarySettled._id + '/earnings')
+      .set('Authorization', 'Bearer ' + p2Token);
+    assert(crossProvEarningsRes.status === 403, 'Unauthorized provider blocked from viewing unassigned booking earnings (403)');
+
+    // 11.6 Completion endpoint returns appropriately sanitized booking data
+    const bFresh = await Booking.create({
+      customer: customer1._id,
+      provider: provider1._id,
+      service: (await Service.findOne({ provider: provider1._id }))._id,
+      scheduledDate: new Date(),
+      address: '90 Privacy Test St',
+      price: 500,
+      pricingModel: 'fixed',
+      workflowStatus: 'work_in_progress',
+      status: 'in_progress',
+      commissionRateSnapshot: 20,
+    });
+
+    const completionPrivacyRes = await request(app)
+      .post('/api/v2/bookings/' + bFresh._id + '/complete')
+      .set('Authorization', 'Bearer ' + p1Token);
+    assert(completionPrivacyRes.status === 200, 'Completion endpoint returns 200 OK');
+    const compBooking = completionPrivacyRes.body.booking;
+    assert(compBooking.commissionRateSnapshot === undefined, 'Completion response sanitizes root commissionRateSnapshot');
+    assert(
+      compBooking.finalFinancials && compBooking.finalFinancials.commissionRate === undefined,
+      'Completion response sanitizes commissionRate'
+    );
+    assert(
+      compBooking.finalFinancials && compBooking.finalFinancials.commissionPaise === undefined,
+      'Completion response sanitizes commissionPaise'
+    );
+    assert(
+      compBooking.finalFinancials && compBooking.finalFinancials.promotionalSubsidyPaise === undefined,
+      'Completion response sanitizes promotionalSubsidyPaise'
+    );
+    assert(
+      compBooking.finalFinancials && compBooking.finalFinancials.netProviderEarningPaise === 40000,
+      'Completion response preserves provider earnings for the provider (40000 paise)'
+    );
+
+    // 11.7 Legacy status update cannot bypass settlement on dispatch booking
+    const fakeJobReqId = new mongoose.Types.ObjectId();
+    const bDispatch = await Booking.create({
+      customer: customer1._id,
+      provider: provider1._id,
+      service: (await Service.findOne({ provider: provider1._id }))._id,
+      jobRequest: fakeJobReqId,
+      scheduledDate: new Date(),
+      address: '95 Dispatch Bypass Test St',
+      price: 500,
+      pricingModel: 'inspection',
+      workflowStatus: 'work_in_progress',
+      status: 'in_progress',
+      commissionRateSnapshot: 20,
+    });
+
+    const dispatchLegacyCompleteRes = await request(app)
+      .patch('/api/bookings/' + bDispatch._id + '/status')
+      .set('Authorization', 'Bearer ' + p1Token)
+      .send({ status: 'completed' });
+    assert(
+      dispatchLegacyCompleteRes.status === 400,
+      'Legacy PATCH completion on dispatch booking rejected with 400 Bad Request'
+    );
+    assert(
+      dispatchLegacyCompleteRes.body.message.includes('POST /api/v2/bookings/:id/complete'),
+      'Legacy rejection directs client to workflow completion endpoint'
+    );
+
+    // Verify DB was NOT modified and NO ledger entries were created
+    const bDispatchCheck = await Booking.findById(bDispatch._id);
+    assert(bDispatchCheck.status === 'in_progress', 'Rejected dispatch booking remains in_progress status');
+    assert(
+      bDispatchCheck.finalFinancials?.settlementStatus !== 'settled',
+      'Rejected dispatch booking is NOT marked settled'
+    );
+    const bDispatchLedgers = await LedgerEntry.find({ booking: bDispatch._id });
+    assert(bDispatchLedgers.length === 0, 'Zero ledger entries created for rejected legacy completion');
+
+    // 11.8 Legacy status update on ordinary direct booking triggers safe settlement delegation
+    const bDirect = await Booking.create({
+      customer: customer1._id,
+      provider: provider1._id,
+      service: (await Service.findOne({ provider: provider1._id }))._id,
+      scheduledDate: new Date(),
+      address: '99 Direct Settlement St',
+      price: 250,
+      pricingModel: 'fixed',
+      status: 'in_progress',
+      commissionRateSnapshot: 20,
+    });
+
+    const directLegacyCompleteRes = await request(app)
+      .patch('/api/bookings/' + bDirect._id + '/status')
+      .set('Authorization', 'Bearer ' + p1Token)
+      .send({ status: 'completed' });
+    assert(directLegacyCompleteRes.status === 200, 'Legacy PATCH completion on direct booking succeeds via settlement service (200 OK)');
+
+    const bDirectCheck = await Booking.findById(bDirect._id);
+    assert(bDirectCheck.status === 'completed', 'Direct booking transitioned to completed');
+    assert(bDirectCheck.finalFinancials.settlementStatus === 'settled', 'Direct booking marked settled via shared settlement service');
+    assert(bDirectCheck.finalFinancials.totalCustomerChargePaise === 25000, 'Direct booking customer charge is 25000 paise (₹250)');
+    assert(bDirectCheck.finalFinancials.netProviderEarningPaise === 20000, 'Direct booking provider earning is 20000 paise (₹200)');
+
+    const bDirectLedgers = await LedgerEntry.find({ booking: bDirect._id });
+    assert(bDirectLedgers.length === 3, 'All 3 ledger entries written for direct booking completion');
+    const directLabour = bDirectLedgers.find((e) => e.entryType === 'labour_charge');
+    const directComm = bDirectLedgers.find((e) => e.entryType === 'platform_commission');
+    const directEarn = bDirectLedgers.find((e) => e.entryType === 'provider_earning');
+    assert(directLabour && directLabour.amountPaise === 25000, 'Direct labour entry is 25000 paise');
+    assert(directComm && directComm.amountPaise === 5000, 'Direct commission entry is 5000 paise (20%)');
+    assert(directEarn && directEarn.amountPaise === 20000, 'Direct provider earning entry is 20000 paise');
+
+    // 11.9 Existing permitted non-completion status updates still work
+    const bPending = await Booking.create({
+      customer: customer1._id,
+      provider: provider1._id,
+      service: (await Service.findOne({ provider: provider1._id }))._id,
+      scheduledDate: new Date(),
+      address: '101 Non Complete Flow St',
+      price: 150,
+      pricingModel: 'fixed',
+      status: 'pending',
+    });
+
+    const acceptRes = await request(app)
+      .patch('/api/bookings/' + bPending._id + '/status')
+      .set('Authorization', 'Bearer ' + p1Token)
+      .send({ status: 'accepted' });
+    assert(acceptRes.status === 200 && acceptRes.body.booking.status === 'accepted', 'Provider can accept pending booking');
+
+    const inProgRes = await request(app)
+      .patch('/api/bookings/' + bPending._id + '/status')
+      .set('Authorization', 'Bearer ' + p1Token)
+      .send({ status: 'in_progress' });
+    assert(inProgRes.status === 200 && inProgRes.body.booking.status === 'in_progress', 'Provider can move accepted to in_progress');
+
+    // Customer can cancel pending booking
+    const bCancel = await Booking.create({
+      customer: customer1._id,
+      provider: provider1._id,
+      service: (await Service.findOne({ provider: provider1._id }))._id,
+      scheduledDate: new Date(),
+      address: '102 Cancellation Flow St',
+      price: 150,
+      pricingModel: 'fixed',
+      status: 'pending',
+    });
+
+    const cancelRes = await request(app)
+      .patch('/api/bookings/' + bCancel._id + '/status')
+      .set('Authorization', 'Bearer ' + c1Token)
+      .send({ status: 'cancelled' });
+    assert(cancelRes.status === 200 && cancelRes.body.booking.status === 'cancelled', 'Customer can cancel pending booking');
+
+    // 11.10 Client-supplied financial request-body fields are strictly ignored
+    const bTamper = await Booking.create({
+      customer: customer1._id,
+      provider: provider1._id,
+      service: (await Service.findOne({ provider: provider1._id }))._id,
+      scheduledDate: new Date(),
+      address: '103 Tamper Test St',
+      price: 100,
+      pricingModel: 'fixed',
+      status: 'in_progress',
+      commissionRateSnapshot: 20,
+    });
+
+    const tamperRes = await request(app)
+      .patch('/api/bookings/' + bTamper._id + '/status')
+      .set('Authorization', 'Bearer ' + p1Token)
+      .send({
+        status: 'completed',
+        commissionRate: 0,
+        commissionPaise: 0,
+        netProviderEarningPaise: 99999999,
+        finalFinancials: { netProviderEarningPaise: 99999999 },
+      });
+    assert(tamperRes.status === 200, 'Tamper attempt completes with authoritative calculations');
+
+    const bTamperDb = await Booking.findById(bTamper._id);
+    assert(
+      bTamperDb.finalFinancials.commissionRate === 20,
+      'Platform commissionRate strictly preserved at authoritative 20% (NOT 0%)'
+    );
+    assert(
+      bTamperDb.finalFinancials.commissionPaise === 2000,
+      'Platform commissionPaise strictly calculated as 2000 paise (NOT 0)'
+    );
+    assert(
+      bTamperDb.finalFinancials.netProviderEarningPaise === 8000,
+      'Provider net earnings strictly calculated as 8000 paise (NOT 99999999)'
+    );
   } catch (err) {
     console.error('\n💥 UNEXPECTED ERROR IN PHASE 5B TESTS:', err);
     failed++;

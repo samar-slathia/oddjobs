@@ -36,6 +36,7 @@ const validateCommissionConfigOnStartup = () => {
  * @param {number} [params.materialsAmountPaise=0] - Non-commissionable materials amount in paise.
  * @param {number} [params.commissionRate] - Snapshot percentage (0-100). Defaults to current config.
  * @param {boolean} [params.isFreeInspection=false] - Whether this is a free-inspection promotion.
+ * @param {boolean} [params.hasApprovedQuote=false] - Whether subsequent repair quote was approved by customer.
  * @param {number} [params.standardInspectionFeePaise=9900] - Standard inspection fee in paise.
  * @returns {Object} Auditable calculation breakdown in integer paise.
  */
@@ -44,6 +45,7 @@ const calculateCommissionAndEarnings = ({
   materialsAmountPaise = 0,
   commissionRate,
   isFreeInspection = false,
+  hasApprovedQuote = false,
   standardInspectionFeePaise = 9900,
 }) => {
   const effectiveRate =
@@ -69,11 +71,25 @@ const calculateCommissionAndEarnings = ({
   let promotionalSubsidyPaise = 0;
 
   if (isFreeInspection) {
-    // Free inspection promotion:
-    // Customer inspection fee is waived.
-    waivedAmountPaise = labourPaise;
-    customerChargePaise = materialsPaise; // Customer only pays for materials if any
-    promotionalSubsidyPaise = labourPaise; // Platform funds the inspection fee
+    if (hasApprovedQuote) {
+      // Free inspection promo applied to the diagnostic phase of the job.
+      // Subsequent approved repair work is NOT free or subsidized:
+      // Customer is charged in full for approved repair quote (labour + materials).
+      // Platform subsidy on approved repair quote is 0.
+      waivedAmountPaise = 0;
+      promotionalSubsidyPaise = 0;
+      customerChargePaise = labourPaise + materialsPaise;
+    } else {
+      // Diagnostic-only inspection:
+      // The platform subsidy is strictly capped at standardInspectionFeePaise (default ₹99.00 / 9900 paise).
+      const subsidyCap = Math.max(0, Math.round(Number(standardInspectionFeePaise) || 9900));
+      const diagnosticLabourPaise = Math.min(labourPaise, subsidyCap);
+
+      waivedAmountPaise = diagnosticLabourPaise;
+      promotionalSubsidyPaise = diagnosticLabourPaise;
+      // Customer pays any excess labour beyond subsidy cap + materials
+      customerChargePaise = (labourPaise - diagnosticLabourPaise) + materialsPaise;
+    }
   }
 
   // Calculate platform commission on commissionBase (labour only, materials excluded!)

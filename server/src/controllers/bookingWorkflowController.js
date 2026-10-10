@@ -7,6 +7,11 @@ const Notification = require('../models/Notification');
 const LedgerEntry = require('../models/LedgerEntry');
 const PromotionRedemption = require('../models/PromotionRedemption');
 const { calculateCommissionAndEarnings } = require('../config/commission');
+const {
+  verifyBookingSettlement,
+  completeAndSettleBooking,
+} = require('../services/settlementService');
+const { serializeBookingForRole } = require('../utils/bookingSerializer');
 
 /**
  * Rounds duration in minutes up to the nearest 15-minute increment.
@@ -655,25 +660,61 @@ exports.stopWorkAndComplete = async (req, res, next) => {
       });
     }
 
-    // Idempotency check: If already completed and ledger created, return existing result
-    if (booking.finalFinancials && booking.finalFinancials.calculated) {
-      return res.status(200).json({
-        success: true,
-        message: 'Booking already completed (idempotent)',
+    const isAlreadyCompleted = booking.workflowStatus === 'completed';
+    const isSettled = booking.finalFinancials && booking.finalFinancials.settlementStatus === 'settled';
+
+    // Rigorous settlement verification for already completed/settled bookings
+    if (isAlreadyCompleted && isSettled) {
+      const calculation = {
+        labourPaise: booking.finalFinancials.labourPaise,
+        materialsPaise: booking.finalFinancials.materialsPaise,
+        commissionRate: booking.finalFinancials.commissionRate,
+        commissionPaise: booking.finalFinancials.commissionPaise,
+        netProviderEarningPaise: booking.finalFinancials.netProviderEarningPaise,
+        customerChargePaise: booking.finalFinancials.totalCustomerChargePaise,
+        promotionalSubsidyPaise: booking.finalFinancials.promotionalSubsidyPaise || 0,
+      };
+
+      const verification = await verifyBookingSettlement(
         booking,
-      });
+        calculation,
+        Boolean(booking.finalFinancials.isFreeInspection)
+      );
+
+      if (verification.isValid) {
+        return res.status(200).json({
+          success: true,
+          message: 'Booking already completed and settled (idempotent)',
+          financials: {
+            totalCustomerChargePaise: booking.finalFinancials.totalCustomerChargePaise,
+            labourPaise: booking.finalFinancials.labourPaise,
+            materialsPaise: booking.finalFinancials.materialsPaise,
+            isFreeInspection: booking.finalFinancials.isFreeInspection,
+          },
+          booking: serializeBookingForRole(booking, req.user.role),
+        });
+      }
+
+      if (verification.inconsistentEntries.length > 0) {
+        return res.status(409).json({
+          success: false,
+          message: 'Financial settlement inconsistency detected: ledger entry amount does not match expected calculation.',
+          inconsistencies: verification.inconsistentEntries,
+        });
+      }
+      // If missing entries, falls through to completeAndSettleBooking to reconcile!
     }
 
     const now = new Date();
     booking.labourTracking = booking.labourTracking || {};
-    booking.labourTracking.workStoppedAt = now;
+    booking.labourTracking.workStoppedAt = booking.labourTracking.workStoppedAt || now;
 
     // Calculate duration for hourly labour if work was started
-    let actualWorkedMinutes = 0;
-    if (booking.labourTracking.workStartedAt) {
+    let actualWorkedMinutes = booking.labourTracking.totalWorkedMinutes || 0;
+    if (!isAlreadyCompleted && booking.labourTracking.workStartedAt) {
       actualWorkedMinutes = Math.round((now.getTime() - new Date(booking.labourTracking.workStartedAt).getTime()) / 60000);
+      booking.labourTracking.totalWorkedMinutes = actualWorkedMinutes;
     }
-    booking.labourTracking.totalWorkedMinutes = actualWorkedMinutes;
 
     // Billable duration uses documented rounding up to 15 minutes
     const roundedMinutes = roundToNearest15Minutes(actualWorkedMinutes);
@@ -683,14 +724,15 @@ exports.stopWorkAndComplete = async (req, res, next) => {
     let labourAmountPaise = 0;
     let materialsAmountPaise = 0;
     let isFreeInspection = false;
+    let hasApprovedQuote = false;
 
     // Check if free inspection promotion applies
     const redemption = await PromotionRedemption.findOne({
-      booking: booking._id,
+      $or: [{ booking: booking._id }, { jobRequest: booking.jobRequest }],
       status: { $in: ['reserved', 'redeemed'] },
     });
 
-    if (redemption) {
+    if (redemption || booking.finalFinancials?.isFreeInspection) {
       isFreeInspection = true;
     }
 
@@ -701,6 +743,7 @@ exports.stopWorkAndComplete = async (req, res, next) => {
 
       if (approvedQuote) {
         // Quoted repair work was approved!
+        hasApprovedQuote = true;
         labourAmountPaise = approvedQuote.labourAmountPaise;
         materialsAmountPaise = approvedQuote.materialsTotalPaise + (approvedQuote.otherChargesPaise || 0);
       } else {
@@ -725,166 +768,25 @@ exports.stopWorkAndComplete = async (req, res, next) => {
       materialsAmountPaise,
       commissionRate: booking.commissionRateSnapshot,
       isFreeInspection,
+      hasApprovedQuote,
       standardInspectionFeePaise: 9900,
     });
 
-    // Save final financial snapshot on booking
-    booking.finalFinancials = {
-      calculated: true,
-      labourPaise: calculation.labourPaise,
-      materialsPaise: calculation.materialsPaise,
-      extensionsPaise: booking.labourTracking.approvedExtensionAmountPaise || 0,
-      totalCustomerChargePaise: calculation.customerChargePaise,
-      commissionRate: calculation.commissionRate,
-      commissionPaise: calculation.commissionPaise,
-      netProviderEarningPaise: calculation.netProviderEarningPaise,
-      isFreeInspection,
-      waivedAmountPaise: calculation.waivedAmountPaise,
-      promotionalSubsidyPaise: calculation.promotionalSubsidyPaise,
-      settlementStatus: 'calculated',
-    };
-
-    booking.workflowStatus = 'completed';
-    booking.status = 'completed'; // Sync legacy status
-
-    booking.statusHistory.push({
-      status: 'completed',
-      updatedAt: now,
+    // Execute complete and settle via shared service
+    await completeAndSettleBooking(booking, calculation, isFreeInspection, {
+      now,
       updatedBy: req.user.id,
-      note: `Job completed. Total customer charge: ₹${(calculation.customerChargePaise / 100).toFixed(2)}`,
     });
 
-    await booking.save();
-
-    // Redeem free inspection promotion atomically
-    if (redemption) {
-      redemption.status = 'redeemed';
-      redemption.redeemedAt = now;
-      await redemption.save();
+    if (!isAlreadyCompleted) {
+      await Notification.create({
+        user: booking.customer,
+        title: 'Booking Completed',
+        message: `Your service booking is completed. Total charged: ₹${(calculation.customerChargePaise / 100).toFixed(2)}.`,
+        type: 'status_change',
+        link: '/customer/history',
+      });
     }
-
-    // Create append-only ledger entries with unique idempotency keys
-    const idempotencyBase = `${booking._id}_comp_${Date.now()}`;
-
-    // 1. Labour Charge
-    await LedgerEntry.findOneAndUpdate(
-      { idempotencyKey: `${booking._id}_labour` },
-      {
-        $setOnInsert: {
-          booking: booking._id,
-          jobRequest: booking.jobRequest || null,
-          provider: booking.provider,
-          customer: booking.customer,
-          entryType: 'labour_charge',
-          amountPaise: calculation.labourPaise,
-          currency: 'INR',
-          idempotencyKey: `${booking._id}_labour`,
-          description: `Labour charge for booking ${booking._id}`,
-          settlementStatus: 'calculated',
-          metadata: { labourPaise: calculation.labourPaise },
-        },
-      },
-      { upsert: true }
-    );
-
-    // 2. Materials Charge (if materials exist)
-    if (calculation.materialsPaise > 0) {
-      await LedgerEntry.findOneAndUpdate(
-        { idempotencyKey: `${booking._id}_materials` },
-        {
-          $setOnInsert: {
-            booking: booking._id,
-            jobRequest: booking.jobRequest || null,
-            provider: booking.provider,
-            customer: booking.customer,
-            entryType: 'materials_charge',
-            amountPaise: calculation.materialsPaise,
-            currency: 'INR',
-            idempotencyKey: `${booking._id}_materials`,
-            description: `Materials reimbursement for booking ${booking._id}`,
-            settlementStatus: 'calculated',
-            metadata: { materialsPaise: calculation.materialsPaise },
-          },
-        },
-        { upsert: true }
-      );
-    }
-
-    // 3. Platform Commission
-    await LedgerEntry.findOneAndUpdate(
-      { idempotencyKey: `${booking._id}_commission` },
-      {
-        $setOnInsert: {
-          booking: booking._id,
-          jobRequest: booking.jobRequest || null,
-          provider: booking.provider,
-          customer: booking.customer,
-          entryType: 'platform_commission',
-          amountPaise: calculation.commissionPaise,
-          currency: 'INR',
-          idempotencyKey: `${booking._id}_commission`,
-          description: `Platform commission (${calculation.commissionRate}%) for booking ${booking._id}`,
-          settlementStatus: 'calculated',
-          metadata: {
-            commissionRate: calculation.commissionRate,
-            commissionBasePaise: calculation.commissionBasePaise,
-          },
-        },
-      },
-      { upsert: true }
-    );
-
-    // 4. Provider Net Earning
-    await LedgerEntry.findOneAndUpdate(
-      { idempotencyKey: `${booking._id}_earning` },
-      {
-        $setOnInsert: {
-          booking: booking._id,
-          jobRequest: booking.jobRequest || null,
-          provider: booking.provider,
-          customer: booking.customer,
-          entryType: 'provider_earning',
-          amountPaise: calculation.netProviderEarningPaise,
-          currency: 'INR',
-          idempotencyKey: `${booking._id}_earning`,
-          description: `Calculated net earnings for booking ${booking._id}`,
-          settlementStatus: 'calculated',
-          metadata: { netProviderEarningPaise: calculation.netProviderEarningPaise },
-        },
-      },
-      { upsert: true }
-    );
-
-    // 5. Promotional Subsidy (if free inspection)
-    if (isFreeInspection && calculation.promotionalSubsidyPaise > 0) {
-      await LedgerEntry.findOneAndUpdate(
-        { idempotencyKey: `${booking._id}_promo_subsidy` },
-        {
-          $setOnInsert: {
-            booking: booking._id,
-            jobRequest: booking.jobRequest || null,
-            provider: booking.provider,
-            customer: booking.customer,
-            entryType: 'promotional_subsidy',
-            amountPaise: calculation.promotionalSubsidyPaise,
-            currency: 'INR',
-            idempotencyKey: `${booking._id}_promo_subsidy`,
-            description: `First free inspection platform subsidy for customer ${booking.customer}`,
-            settlementStatus: 'calculated',
-            metadata: { waivedAmountPaise: calculation.waivedAmountPaise },
-          },
-        },
-        { upsert: true }
-      );
-    }
-
-    await Notification.create({
-      user: booking.customer,
-      title: 'Booking Completed',
-      message: `Your service booking is completed. Total charged: ₹${(calculation.customerChargePaise / 100).toFixed(2)}.`,
-      type: 'status_change',
-      link: '/customer/history',
-    });
 
     res.status(200).json({
       success: true,
@@ -895,9 +797,16 @@ exports.stopWorkAndComplete = async (req, res, next) => {
         materialsPaise: calculation.materialsPaise,
         isFreeInspection,
       },
-      booking,
+      booking: serializeBookingForRole(booking, req.user.role),
     });
   } catch (err) {
+    if (err.statusCode) {
+      return res.status(err.statusCode).json({
+        success: false,
+        message: err.message,
+        code: err.code,
+      });
+    }
     next(err);
   }
 };

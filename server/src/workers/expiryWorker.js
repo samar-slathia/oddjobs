@@ -1,6 +1,7 @@
 const JobRequest = require('../models/JobRequest');
 const Booking = require('../models/Booking');
 const PromotionRedemption = require('../models/PromotionRedemption');
+const { reconcilePendingSettlements } = require('../services/settlementService');
 
 const reconcileJobRequests = async () => {
   const now = new Date();
@@ -70,6 +71,11 @@ const startExpiryWorker = () => {
     } catch (err) {
       console.error('[Expiry Worker] Error reconciling requests:', err.message);
     }
+    try {
+      await reconcilePendingSettlements();
+    } catch (err) {
+      console.error('[Expiry Worker] Error reconciling pending settlements:', err.message);
+    }
   }, 60 * 1000);
 
   // Allow Node process to exit gracefully if this timer is active
@@ -82,4 +88,6 @@ const startExpiryWorker = () => {
 
 module.exports = startExpiryWorker;
 module.exports.reconcileJobRequests = reconcileJobRequests;
+module.exports.reconcilePendingSettlements = reconcilePendingSettlements;
 module.exports.startExpiryWorker = startExpiryWorker;
+

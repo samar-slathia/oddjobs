@@ -1,6 +1,9 @@
 const Booking = require('../models/Booking');
 const Service = require('../models/Service');
 const Notification = require('../models/Notification');
+const { serializeBookingForRole, serializeBookingsForRole } = require('../utils/bookingSerializer');
+const { completeAndSettleBooking } = require('../services/settlementService');
+const { calculateCommissionAndEarnings } = require('../config/commission');
 
 // Allowed status transitions map
 const VALID_TRANSITIONS = {
@@ -71,7 +74,7 @@ exports.createBooking = async (req, res, next) => {
     res.status(201).json({
       success: true,
       message: 'Booking request submitted successfully',
-      booking: populatedBooking,
+      booking: serializeBookingForRole(populatedBooking, req.user.role),
     });
   } catch (err) {
     next(err);
@@ -107,7 +110,7 @@ exports.getBookings = async (req, res, next) => {
     res.status(200).json({
       success: true,
       count: bookings.length,
-      bookings,
+      bookings: serializeBookingsForRole(bookings, req.user.role),
     });
   } catch (err) {
     next(err);
@@ -132,8 +135,10 @@ exports.getBookingById = async (req, res, next) => {
     }
 
     // Access check: must be customer, provider, or admin
-    const isCustomer = booking.customer._id.toString() === req.user.id;
-    const isProvider = booking.provider._id.toString() === req.user.id;
+    const customerId = booking.customer?._id ? booking.customer._id.toString() : booking.customer?.toString();
+    const providerId = booking.provider?._id ? booking.provider._id.toString() : booking.provider?.toString();
+    const isCustomer = customerId === req.user.id;
+    const isProvider = providerId === req.user.id;
     const isAdmin = req.user.role === 'admin';
 
     if (!isCustomer && !isProvider && !isAdmin) {
@@ -145,7 +150,7 @@ exports.getBookingById = async (req, res, next) => {
 
     res.status(200).json({
       success: true,
-      booking,
+      booking: serializeBookingForRole(booking, req.user.role),
     });
   } catch (err) {
     next(err);
@@ -170,6 +175,28 @@ exports.updateBookingStatus = async (req, res, next) => {
       });
     }
 
+    const customerId = booking.customer?._id ? booking.customer._id.toString() : booking.customer?.toString();
+    const providerId = booking.provider?._id ? booking.provider._id.toString() : booking.provider?.toString();
+    const isCustomer = customerId === req.user.id;
+    const isProvider = providerId === req.user.id;
+    const isAdmin = req.user.role === 'admin';
+
+    if (!isCustomer && !isProvider && !isAdmin) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to update this booking',
+      });
+    }
+
+    // Idempotent retry check
+    if (booking.status === 'completed' && status === 'completed') {
+      return res.status(200).json({
+        success: true,
+        message: 'Booking is already completed',
+        booking: serializeBookingForRole(booking, req.user.role),
+      });
+    }
+
     const currentStatus = booking.status;
     const allowedNextStatuses = VALID_TRANSITIONS[currentStatus] || [];
 
@@ -181,10 +208,6 @@ exports.updateBookingStatus = async (req, res, next) => {
       });
     }
 
-    const isCustomer = booking.customer._id.toString() === req.user.id;
-    const isProvider = booking.provider._id.toString() === req.user.id;
-    const isAdmin = req.user.role === 'admin';
-
     // Authorization checks for specific transitions:
     // Customer can only cancel
     if (isCustomer && !isAdmin && status !== 'cancelled') {
@@ -194,24 +217,78 @@ exports.updateBookingStatus = async (req, res, next) => {
       });
     }
 
-    // Provider can accept, reject, mark in_progress, mark completed
+    // Provider cannot cancel once accepted unless admin
     if (isProvider && !isAdmin && status === 'cancelled' && currentStatus !== 'pending') {
-      // Provider cannot cancel once accepted unless admin
       return res.status(403).json({
         success: false,
         message: 'Only customer or admin can cancel an active booking',
       });
     }
 
-    if (!isCustomer && !isProvider && !isAdmin) {
-      return res.status(403).json({
-        success: false,
-        message: 'Not authorized to update this booking',
+    // Handle completed transition safely via settlement service or dispatch rejection
+    if (status === 'completed') {
+      // Dispatch bookings require workflow completion (quote approval, labour stop tracking, inspection subsidies)
+      if (booking.jobRequest) {
+        return res.status(400).json({
+          success: false,
+          message: 'Dispatch bookings cannot be completed via legacy status update. Please use the workflow completion endpoint: POST /api/v2/bookings/:id/complete',
+        });
+      }
+
+      // Ordinary direct bookings: delegate safely to shared settlement service
+      const labourAmountPaise = Math.round((booking.price || 0) * 100);
+      const materialsAmountPaise = 0;
+      const commissionRate = booking.commissionRateSnapshot || 20;
+      const isFreeInspection = false;
+      const hasApprovedQuote = false;
+
+      const calculation = calculateCommissionAndEarnings({
+        labourAmountPaise,
+        materialsAmountPaise,
+        commissionRate,
+        isFreeInspection,
+        hasApprovedQuote,
+        standardInspectionFeePaise: 9900,
+      });
+
+      const now = new Date();
+      if (note) {
+        booking.statusHistory.push({
+          status: 'completed',
+          updatedAt: now,
+          updatedBy: req.user.id,
+          note,
+        });
+      }
+
+      await completeAndSettleBooking(booking, calculation, isFreeInspection, {
+        now,
+        updatedBy: req.user.id,
+      });
+
+      // Notify customer
+      await Notification.create({
+        user: customerId,
+        title: 'Booking COMPLETED',
+        message: `Booking for "${booking.service?.title || 'Service'}" was marked completed by ${req.user.name}`,
+        type: 'status_change',
+        link: '/customer/bookings',
+      });
+
+      const updatedBooking = await Booking.findById(booking._id)
+        .populate('customer', 'name email phone location avatar')
+        .populate('provider', 'name email phone location avatar rating')
+        .populate('service', 'title category price priceType location');
+
+      return res.status(200).json({
+        success: true,
+        message: 'Booking status updated to completed',
+        booking: serializeBookingForRole(updatedBooking, req.user.role),
       });
     }
 
-    // Protect dispatch/mobile bookings from bypassing customer quote approval
-    if (booking.jobRequest && ['in_progress', 'completed'].includes(status)) {
+    // Non-completion status transitions (e.g. accepted, in_progress, cancelled, rejected)
+    if (booking.jobRequest && status === 'in_progress') {
       if (booking.pricingModel === 'inspection' && !booking.quoteApproved) {
         return res.status(400).json({
           success: false,
@@ -238,13 +315,13 @@ exports.updateBookingStatus = async (req, res, next) => {
     await booking.save();
 
     // Create notification for recipient
-    const notifyUser = isCustomer ? booking.provider._id : booking.customer._id;
+    const notifyUser = isCustomer ? providerId : customerId;
     const actorName = req.user.name;
 
     await Notification.create({
       user: notifyUser,
       title: `Booking ${status.toUpperCase().replace('_', ' ')}`,
-      message: `Booking for "${booking.service.title}" was updated to ${status.replace('_', ' ')} by ${actorName}`,
+      message: `Booking for "${booking.service?.title || 'Service'}" was updated to ${status.replace('_', ' ')} by ${actorName}`,
       type: 'status_change',
       link: isCustomer ? '/provider/requests' : '/customer/bookings',
     });
@@ -257,7 +334,7 @@ exports.updateBookingStatus = async (req, res, next) => {
     res.status(200).json({
       success: true,
       message: `Booking status updated to ${status}`,
-      booking: updatedBooking,
+      booking: serializeBookingForRole(updatedBooking, req.user.role),
     });
   } catch (err) {
     next(err);

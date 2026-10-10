@@ -163,6 +163,14 @@ const bookingSchema = new mongoose.Schema(
         enum: ['calculated', 'pending_settlement', 'settled'],
         default: 'calculated',
       },
+      settlementClaimedAt: {
+        type: Date,
+        default: null,
+      },
+      settlementClaimToken: {
+        type: String,
+        default: null,
+      },
     },
     statusHistory: [
       {
